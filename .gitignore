@@ -1,3 +1,6 @@
+# Developer Tools
+Create_Update_Package.bat
+
 # Dependencies & Runtime
 node_modules/
 **/node_modules/
