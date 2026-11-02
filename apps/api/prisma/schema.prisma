@@ -1,0 +1,61 @@
+datasource db {
+  provider = "sqlite"
+  url      = "file:./attendance.db"
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// A single lecture session
+model Lecture {
+  id            String   @id @default(uuid())
+  name          String            // e.g. "Mathematics - Section A"
+  studyPeriod   String   @default("MORNING") // MORNING = صباحي, EVENING = مسائي
+  section       String?           // الشعبة المرتبطة بالمحاضرة
+  status        String   @default("ACTIVE")  // ACTIVE or CLOSED
+  qrToken       String   @unique  // current active QR token
+  qrExpiresAt   DateTime          // when the current QR token expires
+  startedAt     DateTime @default(now())
+  closedAt      DateTime?
+  createdAt     DateTime @default(now())
+
+  attendances   AttendanceRecord[]
+}
+
+// Pre-registered student in the college database
+model Student {
+  id           String             @id @default(uuid())
+  orderIndex   Int?               // الترتيب من عمود A في الإكسل
+  studentCode  String             @unique // الباركود / الرقم التعريفي الفريد ID (عمود G)
+  name         String             // اسم الطالب (عمود B)
+  studyPeriod  String             @default("MORNING") // MORNING = صباحي, EVENING = مسائي
+  section      String?            // الشعبة (عمود C)
+  presentCount Int                @default(0) // عدد مرات الحضور (عمود D)
+  absentCount  Int                @default(0) // عدد مرات الغياب (عمود E)
+  totalSessions Int?              // إجمالي المحاضرات (عمود F)
+  rate         Float?             // نسبة الحضور % (اختياري للتوافق القديم)
+  createdAt    DateTime           @default(now())
+  updatedAt    DateTime           @updatedAt
+
+  attendances  AttendanceRecord[]
+}
+
+// A student attendance record
+model AttendanceRecord {
+  id           String    @id @default(uuid())
+  lectureId    String
+  studentId    String?             // relation to Student (optional)
+  studentCode  String?             // student ID / code used to register
+  studentName  String              // student's name
+  status       String    @default("PRESENT")  // PRESENT, ABSENT
+  deviceId     String?             // unique hardware/browser device fingerprint
+  ipAddress    String?             // client IP address
+  registeredAt DateTime  @default(now())
+  createdAt    DateTime  @default(now())
+
+  lecture      Lecture   @relation(fields: [lectureId], references: [id])
+  student      Student?  @relation(fields: [studentId], references: [id], onDelete: SetNull)
+
+  @@unique([lectureId, studentName])  // prevent duplicate student name in same lecture
+}

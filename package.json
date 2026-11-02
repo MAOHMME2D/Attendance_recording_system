@@ -1,0 +1,23 @@
+{
+  "name": "attendance-system",
+  "private": true,
+  "scripts": {
+    "start": "pnpm dev",
+    "dev": "pnpm --parallel -r run dev",
+    "dev:api": "pnpm --filter @attendance/api run dev",
+    "dev:web": "pnpm --filter @attendance/web run dev",
+    "build": "pnpm -r run build",
+    "db:generate": "pnpm --filter @attendance/api run db:generate",
+    "db:push": "pnpm --filter @attendance/api run db:push",
+    "db:seed": "pnpm --filter @attendance/api run db:seed",
+    "db:studio": "pnpm --filter @attendance/api run db:studio",
+    "db:migrate": "pnpm --filter @attendance/api run db:migrate",
+    "setup": "pnpm install && pnpm db:generate && pnpm db:push && pnpm db:seed"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "devDependencies": {
+    "has-flag": "^4.0.0"
+  }
+}

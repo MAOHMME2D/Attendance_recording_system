@@ -1,0 +1,696 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg-primary: #F8F9FA;
+  --bg-secondary: #FFFFFF;
+  --bg-card: #FFFFFF;
+  --bg-card-hover: #F3F4F6;
+  --accent: #C9A84C;
+  --accent-light: #D4AF37;
+  --accent-glow: rgba(201, 168, 76, 0.2);
+  --gold: #C9A84C;
+  --gold-light: #DFBF5F;
+  --gold-dark: #A37E2C;
+  --black: #0A0A0A;
+  --black-surface: #121212;
+  --success: #10B981;
+  --success-light: #ECFDF5;
+  --success-text: #065F46;
+  --text-primary: #111827;
+  --text-secondary: #4B5563;
+  --text-muted: #6B7280;
+  --border: #E5E7EB;
+  --border-accent: rgba(201, 168, 76, 0.4);
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  font-family: 'Cairo', 'Inter', system-ui, sans-serif;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ================ UTILITY CLASSES ================ */
+
+.glass-card {
+  background: #FFFFFF;
+  border: 1px solid #E5E7EB;
+  border-radius: 16px;
+  box-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.05), 0 2px 6px -1px rgba(0, 0, 0, 0.02);
+  transition: all 0.3s ease;
+}
+
+.glass-card:hover {
+  border-color: var(--gold);
+  box-shadow: 0 10px 30px -5px rgba(201, 168, 76, 0.15), 0 0 0 1px rgba(201, 168, 76, 0.25);
+}
+
+.glow-border {
+  border: 1px solid var(--border-accent);
+  box-shadow: 0 0 20px var(--accent-glow), inset 0 0 10px rgba(201, 168, 76, 0.03);
+}
+
+/* ================ BUTTONS ================ */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 12px 24px;
+  border-radius: 12px;
+  font-weight: 600;
+  font-size: 15px;
+  font-family: 'Cairo', sans-serif;
+  cursor: pointer;
+  border: none;
+  transition: all 0.25s ease;
+  position: relative;
+  overflow: hidden;
+}
+
+.btn::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(135deg, rgba(255,255,255,0.1) 0%, transparent 50%);
+  opacity: 0;
+  transition: opacity 0.25s;
+}
+
+.btn:hover::after {
+  opacity: 1;
+}
+
+.btn-primary {
+  background: linear-gradient(135deg, var(--gold-light), var(--gold));
+  color: #0A0A0A;
+  font-weight: 700;
+  border: 1px solid var(--gold-dark);
+  box-shadow: 0 4px 15px rgba(201, 168, 76, 0.25);
+}
+
+.btn-primary:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 25px rgba(201, 168, 76, 0.35);
+}
+
+.btn-primary:active {
+  transform: translateY(0);
+}
+
+.btn-success {
+  background: #0A0A0A;
+  color: #FFFFFF;
+  border: 1px solid #27272A;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+}
+
+.btn-success:hover {
+  background: #18181B;
+  transform: translateY(-2px);
+}
+
+.btn-danger {
+  background: #111827;
+  color: #FFFFFF;
+  border: 1px solid #374151;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+}
+
+.btn-danger:hover {
+  background: #000000;
+  transform: translateY(-2px);
+}
+
+.btn-ghost {
+  background: #FFFFFF;
+  color: #111827;
+  border: 1px solid #D1D5DB;
+  font-weight: 600;
+}
+
+.btn-ghost:hover {
+  background: #F3F4F6;
+  color: #000000;
+  border-color: #9CA3AF;
+}
+
+.btn-sm {
+  padding: 8px 16px;
+  font-size: 13px;
+  border-radius: 10px;
+}
+
+.btn-lg {
+  padding: 16px 36px;
+  font-size: 18px;
+  border-radius: 14px;
+}
+
+/* ================ INPUTS ================ */
+
+.input {
+  width: 100%;
+  padding: 14px 18px;
+  background: #FFFFFF;
+  border: 1px solid #D1D5DB;
+  border-radius: 12px;
+  color: #111827;
+  font-size: 15px;
+  font-family: 'Cairo', sans-serif;
+  outline: none;
+  transition: all 0.25s ease;
+}
+
+.input:focus {
+  border-color: var(--gold);
+  box-shadow: 0 0 0 3px rgba(201, 168, 76, 0.25);
+}
+
+.input::placeholder {
+  color: #9CA3AF;
+}
+
+/* ================ STATUS BADGES ================ */
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  border-radius: 20px;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.badge-present {
+  background: #ECFDF5;
+  color: #065F46;
+  border: 1px solid #A7F3D0;
+}
+
+.badge-absent {
+  background: #F3F4F6;
+  color: #374151;
+  border: 1px solid #E5E7EB;
+}
+
+.badge-active {
+  background: #FFFBEB;
+  color: #92400E;
+  border: 1px solid #FCD34D;
+}
+
+.badge-closed {
+  background: #F3F4F6;
+  color: #6B7280;
+  border: 1px solid #E5E7EB;
+}
+
+/* ================ QR CODE CONTAINER ================ */
+
+.qr-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  padding: 28px;
+  background: #FFFFFF;
+  border: 1px solid #E5E7EB;
+  border-radius: 20px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.06);
+}
+
+.qr-timer {
+  position: relative;
+  width: 48px;
+  height: 48px;
+}
+
+.qr-timer svg {
+  transform: rotate(-90deg);
+}
+
+.qr-timer-text {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 14px;
+  color: var(--text-primary);
+}
+
+/* ================ ANIMATIONS ================ */
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes slideUp {
+  from { opacity: 0; transform: translateY(20px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes pulse-glow {
+  0%, 100% { box-shadow: 0 0 20px var(--accent-glow); }
+  50% { box-shadow: 0 0 40px var(--accent-glow), 0 0 60px rgba(201, 168, 76, 0.15); }
+}
+
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+@keyframes float {
+  0%, 100% { transform: translateY(0px); }
+  50% { transform: translateY(-6px); }
+}
+
+.animate-fade-in {
+  animation: fadeIn 0.4s ease-out;
+}
+
+.animate-slide-up {
+  animation: slideUp 0.5s ease-out;
+}
+
+.animate-pulse-glow {
+  animation: pulse-glow 3s ease-in-out infinite;
+}
+
+.animate-float {
+  animation: float 3s ease-in-out infinite;
+}
+
+/* Staggered animations for list items */
+.stagger-1 { animation-delay: 0.05s; }
+.stagger-2 { animation-delay: 0.1s; }
+.stagger-3 { animation-delay: 0.15s; }
+.stagger-4 { animation-delay: 0.2s; }
+.stagger-5 { animation-delay: 0.25s; }
+
+/* ================ NAV ================ */
+
+.nav-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 28px;
+  background: #0A0A0A;
+  border-bottom: 2px solid var(--gold);
+  position: sticky;
+  top: 0;
+  z-index: 50;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.12);
+}
+
+.nav-logo {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 20px;
+  font-weight: 800;
+  color: #FFFFFF;
+  text-decoration: none;
+}
+
+.nav-links {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.nav-link {
+  padding: 8px 18px;
+  border-radius: 10px;
+  font-weight: 600;
+  font-size: 14px;
+  color: #9CA3AF;
+  text-decoration: none;
+  transition: all 0.2s ease;
+}
+
+.nav-link:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #FFFFFF;
+}
+
+.nav-link.active {
+  background: linear-gradient(135deg, var(--gold-light), var(--gold));
+  color: #0A0A0A;
+  font-weight: 700;
+}
+
+/* ================ TABLE ================ */
+
+.attendance-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  background: #FFFFFF;
+}
+
+.attendance-table th {
+  padding: 14px 18px;
+  text-align: right;
+  font-weight: 700;
+  font-size: 13px;
+  color: #4B5563;
+  background: #F9FAFB;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  border-bottom: 2px solid #E5E7EB;
+}
+
+.attendance-table td {
+  padding: 16px 18px;
+  border-bottom: 1px solid #F3F4F6;
+  font-size: 15px;
+  color: #111827;
+  background: #FFFFFF;
+  transition: background 0.15s;
+}
+
+.attendance-table tr:hover td {
+  background: #FFFDF5;
+}
+
+.attendance-table tr:last-child td {
+  border-bottom: none;
+}
+
+/* ================ COUNTER CARDS ================ */
+
+.counter-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 20px;
+  border-radius: 14px;
+  min-width: 120px;
+  background: #FFFFFF;
+  border: 1px solid #E5E7EB;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.03);
+}
+
+.counter-card .count {
+  font-size: 36px;
+  font-weight: 800;
+  line-height: 1;
+  color: #111827;
+}
+
+.counter-card .label {
+  font-size: 13px;
+  font-weight: 600;
+  color: #6B7280;
+}
+
+/* ================ EMPTY STATE ================ */
+
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: 60px 20px;
+  text-align: center;
+}
+
+.empty-state-icon {
+  width: 80px;
+  height: 80px;
+  border-radius: 20px;
+  background: #F3F4F6;
+  border: 1px solid #E5E7EB;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 36px;
+}
+
+/* ================ STUDENT CHECK-IN PAGE ================ */
+
+.checkin-page {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: #F8F9FA;
+}
+
+.checkin-card {
+  width: 100%;
+  max-width: 440px;
+  padding: 36px 32px;
+  background: #FFFFFF;
+  border: 1px solid #E5E7EB;
+  border-radius: 24px;
+  box-shadow: 0 10px 40px -10px rgba(0, 0, 0, 0.08), 0 0 0 1px rgba(201, 168, 76, 0.25);
+}
+
+.checkin-success {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 20px;
+  text-align: center;
+}
+
+.success-icon {
+  width: 80px;
+  height: 80px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--success), #059669);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 36px;
+  box-shadow: 0 0 40px rgba(16, 185, 129, 0.4);
+  animation: pulse-glow 2s ease-in-out infinite;
+}
+
+/* ================ SCROLLBAR ================ */
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--text-muted);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-secondary);
+}
+
+/* ================ RESPONSIVE ================ */
+
+@media (max-width: 768px) {
+  .nav-bar {
+    padding: 12px 16px;
+  }
+
+  .nav-logo {
+    font-size: 16px;
+  }
+
+  .btn-lg {
+    padding: 14px 28px;
+    font-size: 16px;
+  }
+
+  .counter-card {
+    min-width: 90px;
+    padding: 14px;
+  }
+
+  .counter-card .count {
+    font-size: 28px;
+  }
+}
+
+/* ================ CAMERA SCANNER & PRINT STYLES ================ */
+
+@keyframes scaleUp {
+  from { opacity: 0; transform: scale(0.92); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+@keyframes laserSweep {
+  0% { top: 10%; opacity: 0.6; }
+  50% { opacity: 1; }
+  100% { top: 90%; opacity: 0.6; }
+}
+
+.animate-laser-sweep {
+  animation: laserSweep 2.2s ease-in-out infinite alternate;
+}
+
+
+#laptop-attendance-qr-reader video {
+  border-radius: 16px;
+  object-fit: cover !important;
+}
+
+@page {
+  size: A4 portrait;
+  margin: 6mm;
+}
+
+@media print {
+  /* HIDE ALL SCREEN ELEMENTS WITH DISPLAY: NONE SO ZERO BLANK PAGES OCCUR */
+  nav,
+  .nav-bar,
+  .students-page-main-layout,
+  .no-print {
+    display: none !important;
+  }
+
+  html, body {
+    margin: 0 !important;
+    padding: 0 !important;
+    background: #FFFFFF !important;
+    color: #000000 !important;
+    height: auto !important;
+    min-height: auto !important;
+    overflow: visible !important;
+  }
+
+  /* Modal backdrop becomes pure invisible layout container */
+  .modal-backdrop,
+  .bulk-cards-modal-window,
+  .single-card-modal-window {
+    position: static !important;
+    inset: auto !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    height: auto !important;
+    max-height: none !important;
+    background: transparent !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    border: none !important;
+    box-shadow: none !important;
+    overflow: visible !important;
+    display: block !important;
+  }
+
+  /* Single student printable card: centered neatly on Page 1 */
+  #printable-student-card,
+  #printable-student-card * {
+    visibility: visible !important;
+  }
+
+  #printable-student-card {
+    position: static !important;
+    margin: 30mm auto !important;
+    width: 96mm !important;
+    max-width: 96mm !important;
+    background: #FFFFFF !important;
+    color: #111827 !important;
+    border: 2px solid #111827 !important;
+    border-radius: 16px !important;
+    box-shadow: none !important;
+    padding: 20px 16px !important;
+    text-align: center !important;
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+  }
+
+  #printable-student-card h2,
+  #printable-student-card div,
+  #printable-student-card span,
+  #printable-student-card p {
+    color: #111827 !important;
+  }
+
+  /* Bulk printable cards container: pages of 9 cards (3x3 on A4) */
+  #bulk-print-cards-container,
+  #bulk-print-cards-container * {
+    visibility: visible !important;
+  }
+
+  #bulk-print-cards-container {
+    position: static !important;
+    inset: auto !important;
+    width: 100% !important;
+    background: #FFFFFF !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    border: none !important;
+    overflow: visible !important;
+    max-height: none !important;
+    display: block !important;
+  }
+
+  .bulk-cards-page {
+    page-break-after: always !important;
+    break-after: page !important;
+    display: grid !important;
+    grid-template-columns: repeat(3, 1fr) !important;
+    grid-template-rows: repeat(3, 85mm) !important;
+    gap: 4mm !important;
+    width: 100% !important;
+    height: 265mm !important;
+    max-height: 265mm !important;
+    box-sizing: border-box !important;
+    margin: 0 auto !important;
+    padding: 0 !important;
+  }
+
+  .bulk-cards-page:last-child {
+    page-break-after: avoid !important;
+    break-after: avoid !important;
+  }
+
+  /* Exactly 3 cards per row, 3 rows per page (9 cards per A4 page) */
+  .student-print-badge {
+    box-sizing: border-box !important;
+    width: 100% !important;
+    height: 85mm !important;
+    max-height: 85mm !important;
+    border: 1.5px solid #111827 !important;
+    border-radius: 10px !important;
+    background: #FFFFFF !important;
+    box-shadow: none !important;
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+    break-inside: avoid-page !important;
+    display: flex !important;
+    flex-direction: column !important;
+    align-items: center !important;
+    justify-content: space-between !important;
+    padding: 8px 6px !important;
+    margin: 0 !important;
+    overflow: hidden !important;
+  }
+}
