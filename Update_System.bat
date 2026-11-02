@@ -1,4 +1,4 @@
-﻿# 2>nul & @cls & @powershell -NoProfile -ExecutionPolicy Bypass -Command "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Invoke-Expression ([System.IO.File]::ReadAllText('%~f0', [System.Text.Encoding]::UTF8))" & @exit /b %errorlevel%
+# 2>nul & @cls & @powershell -NoProfile -ExecutionPolicy Bypass -Command "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Invoke-Expression ([System.IO.File]::ReadAllText('%~f0', [System.Text.Encoding]::UTF8))" & @exit /b %errorlevel%
 
 # ========================================================
 # Smart Attendance Recording System - Updater
