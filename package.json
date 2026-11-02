@@ -1,5 +1,8 @@
 {
   "name": "attendance-system",
+  "version": "1.0.0",
+  "author": "Mohammed Redha",
+  "license": "MIT",
   "private": true,
   "scripts": {
     "start": "pnpm dev",

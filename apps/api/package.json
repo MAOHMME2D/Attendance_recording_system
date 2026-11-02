@@ -1,6 +1,8 @@
 {
   "name": "@attendance/api",
   "version": "1.0.0",
+  "author": "Mohammed Redha",
+  "license": "MIT",
   "private": true,
   "scripts": {
     "build": "nest build",
