@@ -3,7 +3,7 @@ import './globals.css';
 
 export const metadata: Metadata = {
   title: 'كلية البوليتكنك | قسم تقنيات المختبرات الطبية',
-  description: 'نظام تسجيل الحضور الذكي - كلية البوليتكنك | قسم تقنيات المختبرات الطبية',
+  description: 'نظام تسجيل الحضور الذكي - كلية البوليتكنك | قسم تقنيات المختبرات الطبية - تطوير: Mohammed Redha',
 };
 
 export default function RootLayout({
@@ -22,8 +22,29 @@ export default function RootLayout({
         />
         <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
       </head>
-      <body>
-        {children}
+      <body style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
+          {children}
+        </div>
+        <footer
+          className="no-print"
+          style={{
+            marginTop: 'auto',
+            padding: '18px 16px',
+            textAlign: 'center',
+            borderTop: '1px solid #E5E7EB',
+            background: '#FFFFFF',
+            color: '#6B7280',
+            fontSize: '12px',
+          }}
+        >
+          <div>
+            نظام تسجيل الحضور الذكي • كلية البوليتكنك | قسم تقنيات المختبرات الطبية
+          </div>
+          <div style={{ marginTop: '5px', fontSize: '12px', color: '#374151' }}>
+            تطوير وبرمجة: <strong style={{ color: '#111827', fontWeight: '800' }}>Mohammed Redha (محمد رضا)</strong> • جميع الحقوق محفوظة © 2026
+          </div>
+        </footer>
       </body>
     </html>
   );
