@@ -1,4 +1,4 @@
-# Smart Attendance System - Updater Script
+﻿# Smart Attendance System - Updater Script
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -6,9 +6,8 @@ if (-not $ScriptDir) { $ScriptDir = Get-Location }
 Set-Location $ScriptDir
 
 # ========================================================
-# GitHub Repository: ضع هنا اسم حسابك ومستودعك
-# مثال: "myaccount/attendance-system"
-$GitHubRepo = ""
+# GitHub Repository: مستودع التحديثات الرسمي
+$GitHubRepo = "MAOHMME2D/Attendance_recording_system"
 # ========================================================
 
 Write-Host "========================================================" -ForegroundColor Cyan
