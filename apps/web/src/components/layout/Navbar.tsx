@@ -43,9 +43,6 @@ export default function Navbar() {
           <Link href="/students" className={`nav-link ${pathname === '/students' ? 'active' : ''}`}>
             الطلاب
           </Link>
-          <Link href="/my-qr" className={`nav-link ${pathname === '/my-qr' ? 'active' : ''}`} target="_blank">
-            بطاقة الطالب
-          </Link>
         </div>
 
         <div
