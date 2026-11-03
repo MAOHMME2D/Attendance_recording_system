@@ -1,12 +1,13 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { lectureApi, attendanceApi, studentApi, MORNING_SECTIONS, EVENING_SECTIONS } from '../lib/api';
+import { lectureApi, attendanceApi, studentApi, sectionApi, SectionItem, MORNING_SECTIONS, EVENING_SECTIONS } from '../lib/api';
 import Link from 'next/link';
 import { io, Socket } from 'socket.io-client';
 import * as XLSX from 'xlsx';
 import CameraScanner from '../components/camera/CameraScanner';
 import Navbar from '../components/layout/Navbar';
+import SectionManagerModal from '../components/modals/SectionManagerModal';
 
 interface AttendanceRecord {
   id: string;
@@ -30,10 +31,31 @@ export default function HomePage() {
   const [lectureStudyPeriod, setLectureStudyPeriod] = useState<'MORNING' | 'EVENING'>('MORNING');
   const [selectedSections, setSelectedSections] = useState<string[]>([]); // empty array means ALL sections
   const [isCreating, setIsCreating] = useState(false);
+  const [dbSections, setDbSections] = useState<SectionItem[]>([]);
+  const [showSectionModal, setShowSectionModal] = useState(false);
 
-  // Sections definitions from unified lib/api
-  const morningSections = MORNING_SECTIONS;
-  const eveningSections = EVENING_SECTIONS;
+  // Load dynamic sections from database
+  const loadDynamicSections = useCallback(async () => {
+    try {
+      const data = await sectionApi.getAll();
+      if (data && data.length > 0) {
+        setDbSections(data);
+      }
+    } catch (_) {}
+  }, []);
+
+  useEffect(() => {
+    loadDynamicSections();
+  }, [loadDynamicSections]);
+
+  // Sections definitions (dynamic with fallback to MORNING_SECTIONS / EVENING_SECTIONS)
+  const morningSections = dbSections.filter(s => s.studyPeriod === 'MORNING').length > 0
+    ? dbSections.filter(s => s.studyPeriod === 'MORNING').map(s => ({ value: s.name, label: s.label || `الشعبة ${s.name}` }))
+    : MORNING_SECTIONS;
+
+  const eveningSections = dbSections.filter(s => s.studyPeriod === 'EVENING').length > 0
+    ? dbSections.filter(s => s.studyPeriod === 'EVENING').map(s => ({ value: s.name, label: s.label || `الشعبة ${s.name}` }))
+    : EVENING_SECTIONS;
 
   const availableSections = lectureStudyPeriod === 'MORNING' ? morningSections : eveningSections;
 
@@ -434,22 +456,44 @@ export default function HomePage() {
                   <label style={{ fontSize: '13px', fontWeight: '700', color: '#374151' }}>
                     الشُعب المستهدفة (يمكنك اختيار أكثر من شعبة):
                   </label>
-                  <button
-                    type="button"
-                    onClick={() => setSelectedSections([])}
-                    style={{
-                      background: selectedSections.length === 0 ? '#111827' : '#F3F4F6',
-                      color: selectedSections.length === 0 ? '#FFFFFF' : '#4B5563',
-                      border: selectedSections.length === 0 ? '1px solid #111827' : '1px solid #D1D5DB',
-                      borderRadius: '6px',
-                      padding: '3px 10px',
-                      fontSize: '11px',
-                      fontWeight: '700',
-                      cursor: 'pointer',
-                    }}
-                  >
-                    {selectedSections.length === 0 ? '✓ تم تحديد كافة الشُعب' : 'تحديد كافة الشُعب'}
-                  </button>
+                  <div style={{ display: 'flex', gap: '6px' }}>
+                    <button
+                      type="button"
+                      onClick={() => setShowSectionModal(true)}
+                      title="إضافة أو حذف شُعب"
+                      style={{
+                        background: '#EEF2FF',
+                        color: '#4F46E5',
+                        border: '1px solid #C7D2FE',
+                        borderRadius: '6px',
+                        padding: '3px 10px',
+                        fontSize: '11px',
+                        fontWeight: '700',
+                        cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '4px',
+                      }}
+                    >
+                      ⚙️ إدارة الشُعب
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setSelectedSections([])}
+                      style={{
+                        background: selectedSections.length === 0 ? '#111827' : '#F3F4F6',
+                        color: selectedSections.length === 0 ? '#FFFFFF' : '#4B5563',
+                        border: selectedSections.length === 0 ? '1px solid #111827' : '1px solid #D1D5DB',
+                        borderRadius: '6px',
+                        padding: '3px 10px',
+                        fontSize: '11px',
+                        fontWeight: '700',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      {selectedSections.length === 0 ? '✓ تم تحديد كافة الشُعب' : 'تحديد كافة الشُعب'}
+                    </button>
+                  </div>
                 </div>
 
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(130px, 1fr))', gap: '8px' }}>
@@ -1209,6 +1253,13 @@ export default function HomePage() {
             </div>
           </div>
         )}
+        {/* Section Management Modal */}
+        <SectionManagerModal
+          isOpen={showSectionModal}
+          onClose={() => setShowSectionModal(false)}
+          onSectionsChanged={loadDynamicSections}
+          initialPeriod={lectureStudyPeriod}
+        />
       </div>
     </div>
   );

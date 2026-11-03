@@ -65,6 +65,19 @@ export class StudentController {
     return this.studentService.createBatch(body.students);
   }
 
+  @Post('reset-absences')
+  async resetAbsences(
+    @Body()
+    body: {
+      studyPeriod?: string;
+      section?: string;
+      studentId?: string;
+      resetType?: 'ABSENCES_ONLY' | 'ALL_ATTENDANCE';
+    },
+  ) {
+    return this.studentService.resetAbsences(body);
+  }
+
   @Put(':id')
   async update(
     @Param('id') id: string,

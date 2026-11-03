@@ -59,3 +59,15 @@ model AttendanceRecord {
 
   @@unique([lectureId, studentName])  // prevent duplicate student name in same lecture
 }
+
+// Defined college section per study period
+model Section {
+  id          String   @id @default(uuid())
+  studyPeriod String   @default("MORNING") // MORNING or EVENING
+  name        String   // "1", "2", "3", "A", etc.
+  label       String?  // "الشعبة الأولى", etc.
+  createdAt   DateTime @default(now())
+
+  @@unique([studyPeriod, name])
+}
+

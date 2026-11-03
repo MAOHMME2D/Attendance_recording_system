@@ -277,4 +277,108 @@ export class StudentService {
     this.logger.log(`Deleted student ${id} (${student.name})`);
     return { success: true };
   }
+
+  /**
+   * Reset absences (تصفير الغيابات)
+   * Can reset:
+   * - All students
+   * - A specific study period (MORNING / EVENING)
+   * - A specific section
+   * - A single student
+   * resetType: 'ABSENCES_ONLY' | 'ALL_ATTENDANCE'
+   */
+  async resetAbsences(params: {
+    studyPeriod?: string;
+    section?: string;
+    studentId?: string;
+    resetType?: 'ABSENCES_ONLY' | 'ALL_ATTENDANCE';
+  }) {
+    const { studyPeriod, section, studentId, resetType = 'ABSENCES_ONLY' } = params;
+
+    const whereClause: any = {};
+    if (studentId) {
+      whereClause.id = studentId;
+    } else {
+      if (studyPeriod && (studyPeriod === 'MORNING' || studyPeriod === 'EVENING')) {
+        whereClause.studyPeriod = studyPeriod;
+      }
+      if (section && section !== 'ALL') {
+        whereClause.section = normalizeSection(section);
+      }
+    }
+
+    const students = await this.prisma.student.findMany({
+      where: whereClause,
+      select: { id: true, name: true },
+    });
+
+    if (students.length === 0) {
+      return { success: true, count: 0, message: 'لم يتم العثور على طلاب مطابقين للتصفير' };
+    }
+
+    const studentIds = students.map(s => s.id);
+
+    if (resetType === 'ALL_ATTENDANCE') {
+      // 1. Delete all attendance records for these students
+      await this.prisma.attendanceRecord.deleteMany({
+        where: { studentId: { in: studentIds } },
+      });
+
+      // 2. Reset counts on student table
+      await this.prisma.student.updateMany({
+        where: { id: { in: studentIds } },
+        data: {
+          presentCount: 0,
+          absentCount: 0,
+          totalSessions: 0,
+          rate: 100,
+        },
+      });
+
+      this.logger.log(`Full reset (attendance + absences) completed for ${students.length} students`);
+      return {
+        success: true,
+        count: students.length,
+        message: `تم تصفير سجل الحضور والغياب بالكامل لـ ${students.length} طالب بنجاح`,
+      };
+    } else {
+      // ABSENCES_ONLY:
+      // 1. Delete ABSENT records for these students
+      await this.prisma.attendanceRecord.deleteMany({
+        where: {
+          studentId: { in: studentIds },
+          status: 'ABSENT',
+        },
+      });
+
+      // 2. Set absentCount = 0 and recalculate totalSessions
+      for (const s of students) {
+        const studentData = await this.prisma.student.findUnique({
+          where: { id: s.id },
+          include: { attendances: true },
+        });
+
+        if (studentData) {
+          const presentCount = studentData.attendances.filter(a => a.status === 'PRESENT').length;
+          await this.prisma.student.update({
+            where: { id: s.id },
+            data: {
+              absentCount: 0,
+              presentCount,
+              totalSessions: presentCount,
+              rate: 100,
+            },
+          });
+        }
+      }
+
+      this.logger.log(`Absences reset completed for ${students.length} students`);
+      return {
+        success: true,
+        count: students.length,
+        message: `تم تصفير الغيابات لـ ${students.length} طالب بنجاح`,
+      };
+    }
+  }
 }
+

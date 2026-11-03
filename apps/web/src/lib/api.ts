@@ -164,4 +164,43 @@ export const studentApi = {
 
   delete: (id: string) =>
     apiFetch<any>(`/students/${id}`, { method: 'DELETE' }),
+
+  resetAbsences: (data: {
+    studyPeriod?: string;
+    section?: string;
+    studentId?: string;
+    resetType?: 'ABSENCES_ONLY' | 'ALL_ATTENDANCE';
+  }) =>
+    apiFetch<{ success: boolean; count: number; message: string }>('/students/reset-absences', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
 };
+
+// ============ Sections ============
+export interface SectionItem {
+  id: string;
+  studyPeriod: 'MORNING' | 'EVENING';
+  name: string;
+  label?: string | null;
+  createdAt?: string;
+}
+
+export const sectionApi = {
+  getAll: (studyPeriod?: string) => {
+    const q = studyPeriod ? `?studyPeriod=${studyPeriod}` : '';
+    return apiFetch<SectionItem[]>(`/sections${q}`);
+  },
+
+  create: (data: { studyPeriod: string; name: string; label?: string }) =>
+    apiFetch<SectionItem>('/sections', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  delete: (id: string) =>
+    apiFetch<{ success: boolean; message: string }>(`/sections/${id}`, {
+      method: 'DELETE',
+    }),
+};
+

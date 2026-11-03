@@ -1,12 +1,14 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import Link from 'next/link';
-import { studentApi, MORNING_SECTIONS, EVENING_SECTIONS } from '../../lib/api';
+import { studentApi, sectionApi, SectionItem, MORNING_SECTIONS, EVENING_SECTIONS } from '../../lib/api';
 import * as XLSX from 'xlsx';
 import StudentQrCardModal from '../../components/cards/StudentQrCardModal';
 import BulkStudentCardsModal from '../../components/cards/BulkStudentCardsModal';
 import Navbar from '../../components/layout/Navbar';
+import SectionManagerModal from '../../components/modals/SectionManagerModal';
+import ResetAbsencesModal from '../../components/modals/ResetAbsencesModal';
 
 interface AttendanceHistoryItem {
   attendanceId: string;
@@ -57,6 +59,25 @@ export default function StudentsPage() {
   // Student QR Card Modal & Bulk Print Modal
   const [selectedStudentForCard, setSelectedStudentForCard] = useState<StudentWithStats | null>(null);
   const [showBulkPrintModal, setShowBulkPrintModal] = useState(false);
+
+  // New Modals: Section Manager & Reset Absences
+  const [showSectionModal, setShowSectionModal] = useState(false);
+  const [showResetModal, setShowResetModal] = useState(false);
+  const [successBanner, setSuccessBanner] = useState<string | null>(null);
+  const [dbSections, setDbSections] = useState<SectionItem[]>([]);
+
+  const loadSections = useCallback(async () => {
+    try {
+      const data = await sectionApi.getAll();
+      if (data && data.length > 0) {
+        setDbSections(data);
+      }
+    } catch (_) {}
+  }, []);
+
+  useEffect(() => {
+    loadSections();
+  }, [loadSections]);
 
   // Add single student modal
   const [showAddModal, setShowAddModal] = useState(false);
@@ -442,9 +463,14 @@ export default function StudentsPage() {
     XLSX.writeFile(workbook, `سجل_الطلاب_${dateStr}.xlsx`);
   };
 
-  // Sections definitions from unified lib/api
-  const morningSections = MORNING_SECTIONS;
-  const eveningSections = EVENING_SECTIONS;
+  // Sections definitions from dynamic DB or unified lib/api fallback
+  const morningSections = dbSections.filter(s => s.studyPeriod === 'MORNING').length > 0
+    ? dbSections.filter(s => s.studyPeriod === 'MORNING').map(s => ({ value: s.name, label: s.label || `الشعبة ${s.name}` }))
+    : MORNING_SECTIONS;
+
+  const eveningSections = dbSections.filter(s => s.studyPeriod === 'EVENING').length > 0
+    ? dbSections.filter(s => s.studyPeriod === 'EVENING').map(s => ({ value: s.name, label: s.label || `الشعبة ${s.name}` }))
+    : EVENING_SECTIONS;
 
   // Helper to get formatted section name
   const getSectionDisplayName = (sec?: string | null) => {
@@ -516,6 +542,22 @@ export default function StudentsPage() {
 
           <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
             <button
+              className="btn btn-sm"
+              onClick={() => setShowResetModal(true)}
+              style={{
+                fontSize: '12px',
+                backgroundColor: '#FEF2F2',
+                color: '#DC2626',
+                border: '1px solid #FCA5A5',
+                fontWeight: '700',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '4px',
+              }}
+            >
+              🔄 تصفير الغيابات
+            </button>
+            <button
               className="btn btn-primary btn-sm"
               onClick={() => setShowBulkPrintModal(true)}
               disabled={filteredStudents.length === 0}
@@ -540,9 +582,9 @@ export default function StudentsPage() {
             <button
               className="btn btn-success btn-sm"
               onClick={handleExportExcel}
-              style={{ fontSize: '12px' }}
+              style={{ fontSize: '12px', display: 'flex', alignItems: 'center', gap: '4px' }}
             >
-              تصدير Excel
+              📊 تصدير الغيابات (Excel)
             </button>
           </div>
         </div>
@@ -616,7 +658,7 @@ export default function StudentsPage() {
           {/* Section Filter Buttons: Dynamic depending on Morning vs Evening */}
           {selectedStudyPeriod === 'MORNING' && (
             <div style={{ paddingTop: '12px', borderTop: '1px solid #F3F4F6', display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-              <span style={{ fontSize: '13px', fontWeight: '700', color: '#1E40AF' }}>شعب الصباحي (1 - 3):</span>
+              <span style={{ fontSize: '13px', fontWeight: '700', color: '#1E40AF' }}>شعب الصباحي ({morningSections.length}):</span>
               <button
                 type="button"
                 onClick={() => setSelectedSection('ALL')}
@@ -652,12 +694,29 @@ export default function StudentsPage() {
                   {sec.label} ({sec.value})
                 </button>
               ))}
+              <button
+                type="button"
+                onClick={() => setShowSectionModal(true)}
+                style={{
+                  padding: '5px 12px',
+                  borderRadius: '20px',
+                  fontSize: '12px',
+                  fontWeight: '700',
+                  border: '1px dashed #3B82F6',
+                  background: '#EFF6FF',
+                  color: '#1D4ED8',
+                  cursor: 'pointer',
+                  marginRight: 'auto',
+                }}
+              >
+                ⚙️ إدارة الشُعب
+              </button>
             </div>
           )}
 
           {selectedStudyPeriod === 'EVENING' && (
             <div style={{ paddingTop: '12px', borderTop: '1px solid #F3F4F6', display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-              <span style={{ fontSize: '13px', fontWeight: '700', color: '#6D28D9' }}>شعب المسائي (1 - 8):</span>
+              <span style={{ fontSize: '13px', fontWeight: '700', color: '#6D28D9' }}>شعب المسائي ({eveningSections.length}):</span>
               <button
                 type="button"
                 onClick={() => setSelectedSection('ALL')}
@@ -693,9 +752,53 @@ export default function StudentsPage() {
                   {sec.label} ({sec.value})
                 </button>
               ))}
+              <button
+                type="button"
+                onClick={() => setShowSectionModal(true)}
+                style={{
+                  padding: '5px 12px',
+                  borderRadius: '20px',
+                  fontSize: '12px',
+                  fontWeight: '700',
+                  border: '1px dashed #8B5CF6',
+                  background: '#F5F3FF',
+                  color: '#6D28D9',
+                  cursor: 'pointer',
+                  marginRight: 'auto',
+                }}
+              >
+                ⚙️ إدارة الشُعب
+              </button>
             </div>
           )}
         </div>
+
+        {/* Success Banner */}
+        {successBanner && (
+          <div
+            style={{
+              padding: '12px 16px',
+              borderRadius: '12px',
+              backgroundColor: '#ECFDF5',
+              border: '1px solid #A7F3D0',
+              color: '#065F46',
+              marginBottom: '20px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              fontSize: '14px',
+              fontWeight: '600',
+            }}
+          >
+            <span>✅ {successBanner}</span>
+            <button
+              onClick={() => setSuccessBanner(null)}
+              style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#065F46', fontSize: '16px' }}
+            >
+              ✕
+            </button>
+          </div>
+        )}
 
         {/* Quick Stats Cards: NO Rate */}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '14px', marginBottom: '24px' }}>
@@ -1115,6 +1218,29 @@ export default function StudentsPage() {
           onClose={() => setShowBulkPrintModal(false)}
         />
       )}
+
+      {/* Section Management Modal */}
+      <SectionManagerModal
+        isOpen={showSectionModal}
+        onClose={() => setShowSectionModal(false)}
+        onSectionsChanged={() => {
+          loadSections();
+          loadStudents();
+        }}
+        initialPeriod={selectedStudyPeriod === 'EVENING' ? 'EVENING' : 'MORNING'}
+      />
+
+      {/* Reset Absences Modal */}
+      <ResetAbsencesModal
+        isOpen={showResetModal}
+        onClose={() => setShowResetModal(false)}
+        onSuccess={(msg) => {
+          setSuccessBanner(msg);
+          loadStudents();
+        }}
+        currentStudyPeriod={selectedStudyPeriod !== 'ALL' ? selectedStudyPeriod : undefined}
+        currentSection={selectedSection !== 'ALL' ? selectedSection : undefined}
+      />
     </div>
   );
 }

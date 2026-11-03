@@ -1,0 +1,441 @@
+'use client';
+
+import React, { useState, useEffect } from 'react';
+import { sectionApi, SectionItem, STUDY_PERIODS } from '../../lib/api';
+
+interface SectionManagerModalProps {
+  isOpen: boolean;
+  onClose: () => void;
+  onSectionsChanged?: () => void;
+  initialPeriod?: 'MORNING' | 'EVENING';
+}
+
+export default function SectionManagerModal({
+  isOpen,
+  onClose,
+  onSectionsChanged,
+  initialPeriod = 'MORNING',
+}: SectionManagerModalProps) {
+  const [sections, setSections] = useState<SectionItem[]>([]);
+  const [activeTab, setActiveTab] = useState<'MORNING' | 'EVENING'>(initialPeriod);
+  const [newSectionName, setNewSectionName] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [actionLoading, setActionLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [successMsg, setSuccessMsg] = useState<string | null>(null);
+
+  const loadSections = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const data = await sectionApi.getAll();
+      setSections(data);
+    } catch (err: any) {
+      setError(err.message || 'فشل في تحميل قائمة الشُعب');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (isOpen) {
+      loadSections();
+      setActiveTab(initialPeriod);
+      setNewSectionName('');
+      setError(null);
+      setSuccessMsg(null);
+    }
+  }, [isOpen, initialPeriod]);
+
+  if (!isOpen) return null;
+
+  const currentTabSections = sections.filter((s) => s.studyPeriod === activeTab);
+
+  const handleAddSection = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const cleanName = newSectionName.trim();
+    if (!cleanName) return;
+
+    setActionLoading(true);
+    setError(null);
+    setSuccessMsg(null);
+
+    try {
+      await sectionApi.create({
+        studyPeriod: activeTab,
+        name: cleanName,
+        label: `الشعبة ${cleanName}`,
+      });
+      setNewSectionName('');
+      setSuccessMsg(`تمت إضافة الشعبة (${cleanName}) بنجاح`);
+      await loadSections();
+      if (onSectionsChanged) onSectionsChanged();
+    } catch (err: any) {
+      setError(err.message || 'فشل في إضافة الشعبة');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleDeleteSection = async (sec: SectionItem) => {
+    const confirmed = window.confirm(
+      `هل أنت متأكد من حذف الشعبة (${sec.label || sec.name}) من ${
+        sec.studyPeriod === 'EVENING' ? 'الدراسة المسائية' : 'الدراسة الصباحية'
+      }؟`
+    );
+    if (!confirmed) return;
+
+    setActionLoading(true);
+    setError(null);
+    setSuccessMsg(null);
+
+    try {
+      await sectionApi.delete(sec.id);
+      setSuccessMsg(`تم حذف الشعبة (${sec.name}) بنجاح`);
+      await loadSections();
+      if (onSectionsChanged) onSectionsChanged();
+    } catch (err: any) {
+      setError(err.message || 'فشل في حذف الشعبة');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  return (
+    <div
+      style={{
+        position: 'fixed',
+        inset: 0,
+        backgroundColor: 'rgba(0,0,0,0.5)',
+        backdropFilter: 'blur(3px)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        zIndex: 9999,
+        padding: '16px',
+      }}
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      <div
+        style={{
+          backgroundColor: '#FFFFFF',
+          borderRadius: '16px',
+          width: '100%',
+          maxWidth: '520px',
+          boxShadow: '0 20px 25px -5px rgba(0,0,0,0.1), 0 10px 10px -5px rgba(0,0,0,0.04)',
+          overflow: 'hidden',
+          display: 'flex',
+          flexDirection: 'column',
+          maxHeight: '90vh',
+        }}
+      >
+        {/* Header */}
+        <div
+          style={{
+            padding: '20px',
+            borderBottom: '1px solid #E5E7EB',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            background: 'linear-gradient(135deg, #F9FAFB 0%, #FFFFFF 100%)',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <div
+              style={{
+                width: '36px',
+                height: '36px',
+                borderRadius: '10px',
+                background: '#EEF2FF',
+                color: '#4F46E5',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                fontSize: '18px',
+                fontWeight: 'bold',
+              }}
+            >
+              ⚙️
+            </div>
+            <div>
+              <h3 style={{ margin: 0, fontSize: '18px', fontWeight: 'bold', color: '#111827' }}>
+                إدارة الشُعب الدراسية
+              </h3>
+              <p style={{ margin: 0, fontSize: '12px', color: '#6B7280' }}>
+                إضافة وحذف الشُعب للدراسة الصباحية والمسائية
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={onClose}
+            style={{
+              background: 'none',
+              border: 'none',
+              fontSize: '20px',
+              cursor: 'pointer',
+              color: '#9CA3AF',
+              padding: '4px 8px',
+              borderRadius: '6px',
+            }}
+          >
+            ✕
+          </button>
+        </div>
+
+        {/* Study Period Tabs */}
+        <div
+          style={{
+            display: 'flex',
+            padding: '12px 20px 0',
+            borderBottom: '1px solid #E5E7EB',
+            gap: '8px',
+          }}
+        >
+          {STUDY_PERIODS.map((p) => {
+            const isActive = activeTab === p.value;
+            return (
+              <button
+                key={p.value}
+                onClick={() => {
+                  setActiveTab(p.value as any);
+                  setError(null);
+                  setSuccessMsg(null);
+                }}
+                style={{
+                  padding: '10px 20px',
+                  border: 'none',
+                  background: 'none',
+                  cursor: 'pointer',
+                  fontWeight: isActive ? 'bold' : 'normal',
+                  color: isActive ? '#4F46E5' : '#6B7280',
+                  borderBottom: isActive ? '3px solid #4F46E5' : '3px solid transparent',
+                  transition: 'all 0.2s',
+                  fontSize: '14px',
+                }}
+              >
+                {p.label}
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Body Content */}
+        <div style={{ padding: '20px', overflowY: 'auto', flex: 1 }}>
+          {error && (
+            <div
+              style={{
+                padding: '10px 14px',
+                borderRadius: '8px',
+                background: '#FEF2F2',
+                color: '#DC2626',
+                fontSize: '13px',
+                marginBottom: '16px',
+                border: '1px solid #FEE2E2',
+              }}
+            >
+              ⚠️ {error}
+            </div>
+          )}
+
+          {successMsg && (
+            <div
+              style={{
+                padding: '10px 14px',
+                borderRadius: '8px',
+                background: '#ECFDF5',
+                color: '#059669',
+                fontSize: '13px',
+                marginBottom: '16px',
+                border: '1px solid #D1FAE5',
+              }}
+            >
+              ✅ {successMsg}
+            </div>
+          )}
+
+          {/* Add Section Form */}
+          <form onSubmit={handleAddSection} style={{ marginBottom: '20px' }}>
+            <label
+              style={{
+                display: 'block',
+                fontSize: '13px',
+                fontWeight: '600',
+                color: '#374151',
+                marginBottom: '6px',
+              }}
+            >
+              إضافة شعبة جديدة إلى ({activeTab === 'EVENING' ? 'الدراسة المسائية' : 'الدراسة الصباحية'}):
+            </label>
+            <div style={{ display: 'flex', gap: '8px' }}>
+              <input
+                type="text"
+                placeholder="اسم أو رقم الشعبة (مثال: 9 أو D أو أ)"
+                value={newSectionName}
+                onChange={(e) => setNewSectionName(e.target.value)}
+                style={{
+                  flex: 1,
+                  padding: '10px 14px',
+                  borderRadius: '8px',
+                  border: '1px solid #D1D5DB',
+                  fontSize: '14px',
+                  outline: 'none',
+                }}
+              />
+              <button
+                type="submit"
+                disabled={actionLoading || !newSectionName.trim()}
+                style={{
+                  padding: '10px 18px',
+                  borderRadius: '8px',
+                  border: 'none',
+                  backgroundColor: '#4F46E5',
+                  color: '#FFFFFF',
+                  fontWeight: '600',
+                  fontSize: '14px',
+                  cursor: actionLoading || !newSectionName.trim() ? 'not-allowed' : 'pointer',
+                  opacity: actionLoading || !newSectionName.trim() ? 0.6 : 1,
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                }}
+              >
+                + إضافة
+              </button>
+            </div>
+          </form>
+
+          {/* Current Sections List */}
+          <div>
+            <h4
+              style={{
+                fontSize: '13px',
+                fontWeight: '600',
+                color: '#4B5563',
+                marginBottom: '10px',
+                display: 'flex',
+                justifyContent: 'space-between',
+              }}
+            >
+              <span>الشُعب الحالية المسجلة:</span>
+              <span style={{ color: '#9CA3AF' }}>({currentTabSections.length} شعبة)</span>
+            </h4>
+
+            {loading ? (
+              <p style={{ textAlign: 'center', color: '#9CA3AF', fontSize: '13px', padding: '20px' }}>
+                جاري التحميل...
+              </p>
+            ) : currentTabSections.length === 0 ? (
+              <div
+                style={{
+                  textAlign: 'center',
+                  padding: '30px 20px',
+                  background: '#F9FAFB',
+                  borderRadius: '10px',
+                  color: '#6B7280',
+                  fontSize: '13px',
+                }}
+              >
+                لا توجد شُعب مضافة حالياً لهذه الدراسة. أضف أول شعبة من الحقل أعلاه.
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                {currentTabSections.map((sec) => (
+                  <div
+                    key={sec.id}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      padding: '10px 14px',
+                      borderRadius: '10px',
+                      backgroundColor: '#F9FAFB',
+                      border: '1px solid #E5E7EB',
+                      transition: 'background-color 0.2s',
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                      <span
+                        style={{
+                          width: '28px',
+                          height: '28px',
+                          borderRadius: '8px',
+                          background: '#E0E7FF',
+                          color: '#4338CA',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          fontWeight: 'bold',
+                          fontSize: '13px',
+                        }}
+                      >
+                        {sec.name}
+                      </span>
+                      <span style={{ fontWeight: '600', fontSize: '14px', color: '#1F2937' }}>
+                        {sec.label || `الشعبة ${sec.name}`}
+                      </span>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteSection(sec)}
+                      disabled={actionLoading}
+                      title="حذف هذه الشعبة"
+                      style={{
+                        padding: '6px 12px',
+                        borderRadius: '6px',
+                        border: '1px solid #FCA5A5',
+                        background: '#FEF2F2',
+                        color: '#DC2626',
+                        fontSize: '12px',
+                        fontWeight: '500',
+                        cursor: actionLoading ? 'not-allowed' : 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '4px',
+                        transition: 'all 0.15s',
+                      }}
+                      onMouseEnter={(e) => (e.currentTarget.style.background = '#FEE2E2')}
+                      onMouseLeave={(e) => (e.currentTarget.style.background = '#FEF2F2')}
+                    >
+                      🗑️ حذف
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Footer */}
+        <div
+          style={{
+            padding: '14px 20px',
+            borderTop: '1px solid #E5E7EB',
+            display: 'flex',
+            justifyContent: 'flex-end',
+            background: '#F9FAFB',
+          }}
+        >
+          <button
+            onClick={onClose}
+            style={{
+              padding: '8px 18px',
+              borderRadius: '8px',
+              border: '1px solid #D1D5DB',
+              background: '#FFFFFF',
+              color: '#374151',
+              fontWeight: '500',
+              fontSize: '13px',
+              cursor: 'pointer',
+            }}
+          >
+            إغلاق
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+

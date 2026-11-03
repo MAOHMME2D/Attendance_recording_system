@@ -5,6 +5,7 @@ import { lectureApi } from '../../lib/api';
 import Link from 'next/link';
 import * as XLSX from 'xlsx';
 import Navbar from '../../components/layout/Navbar';
+import ResetAbsencesModal from '../../components/modals/ResetAbsencesModal';
 
 interface AttendanceRecord {
   id: string;
@@ -33,6 +34,8 @@ export default function ReportsPage() {
   const [selectedLecture, setSelectedLecture] = useState<Lecture | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [deleteConfirm, setDeleteConfirm] = useState<{ id: string; name: string } | null>(null);
+  const [showResetModal, setShowResetModal] = useState(false);
+  const [successBanner, setSuccessBanner] = useState<string | null>(null);
 
   useEffect(() => {
     loadLectures();
@@ -209,28 +212,75 @@ export default function ReportsPage() {
             style={{ maxWidth: '400px', flex: 1 }}
           />
 
-          <button
-            className="btn btn-success btn-sm"
-            onClick={handleExportAllLecturesExcel}
-            disabled={lectures.length === 0}
+          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+            <button
+              className="btn btn-sm"
+              onClick={() => setShowResetModal(true)}
+              style={{
+                fontSize: '13px',
+                backgroundColor: '#FEF2F2',
+                color: '#DC2626',
+                border: '1px solid #FCA5A5',
+                fontWeight: '700',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
+                padding: '8px 14px',
+              }}
+            >
+              🔄 تصفير الغيابات
+            </button>
+
+            <button
+              className="btn btn-success btn-sm"
+              onClick={handleExportAllLecturesExcel}
+              disabled={lectures.length === 0}
+              style={{
+                fontSize: '13px',
+                fontWeight: '700',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+                padding: '8px 16px',
+              }}
+              title="تصدير جدول كل المحاضرات مع الإحصائيات إلى ملف إكسل"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                <polyline points="7 10 12 15 17 10" />
+                <line x1="12" y1="15" x2="12" y2="3" />
+              </svg>
+              تصدير تقرير المحاضرات (Excel)
+            </button>
+          </div>
+        </div>
+
+        {/* Success Banner */}
+        {successBanner && (
+          <div
             style={{
-              fontSize: '13px',
-              fontWeight: '700',
+              padding: '12px 16px',
+              borderRadius: '12px',
+              backgroundColor: '#ECFDF5',
+              border: '1px solid #A7F3D0',
+              color: '#065F46',
+              marginBottom: '20px',
               display: 'flex',
               alignItems: 'center',
-              gap: '8px',
-              padding: '8px 16px',
+              justifyContent: 'space-between',
+              fontSize: '14px',
+              fontWeight: '600',
             }}
-            title="تصدير جدول كل المحاضرات مع الإحصائيات إلى ملف إكسل"
           >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-              <polyline points="7 10 12 15 17 10" />
-              <line x1="12" y1="15" x2="12" y2="3" />
-            </svg>
-            تصدير تقرير المحاضرات (Excel)
-          </button>
-        </div>
+            <span>✅ {successBanner}</span>
+            <button
+              onClick={() => setSuccessBanner(null)}
+              style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#065F46', fontSize: '16px' }}
+            >
+              ✕
+            </button>
+          </div>
+        )}
 
         {loading ? (
           <div className="empty-state">
@@ -586,6 +636,16 @@ export default function ReportsPage() {
           </div>
         </div>
       )}
+
+      {/* Reset Absences Modal */}
+      <ResetAbsencesModal
+        isOpen={showResetModal}
+        onClose={() => setShowResetModal(false)}
+        onSuccess={(msg) => {
+          setSuccessBanner(msg);
+          loadLectures();
+        }}
+      />
     </div>
   );
 }
