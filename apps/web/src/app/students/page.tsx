@@ -9,6 +9,7 @@ import BulkStudentCardsModal from '../../components/cards/BulkStudentCardsModal'
 import Navbar from '../../components/layout/Navbar';
 import SectionManagerModal from '../../components/modals/SectionManagerModal';
 import ResetAbsencesModal from '../../components/modals/ResetAbsencesModal';
+import AttendancePdfReportModal from '../../components/modals/AttendancePdfReportModal';
 
 interface AttendanceHistoryItem {
   attendanceId: string;
@@ -63,6 +64,7 @@ export default function StudentsPage() {
   // New Modals: Section Manager & Reset Absences
   const [showSectionModal, setShowSectionModal] = useState(false);
   const [showResetModal, setShowResetModal] = useState(false);
+  const [showPdfReportModal, setShowPdfReportModal] = useState(false);
   const [successBanner, setSuccessBanner] = useState<string | null>(null);
   const [dbSections, setDbSections] = useState<SectionItem[]>([]);
 
@@ -580,11 +582,21 @@ export default function StudentsPage() {
               استيراد طلاب
             </button>
             <button
-              className="btn btn-success btn-sm"
-              onClick={handleExportExcel}
-              style={{ fontSize: '12px', display: 'flex', alignItems: 'center', gap: '4px' }}
+              className="btn btn-sm"
+              onClick={() => setShowPdfReportModal(true)}
+              style={{
+                fontSize: '12px',
+                backgroundColor: '#DC2626',
+                color: '#FFFFFF',
+                border: 'none',
+                fontWeight: '700',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
+                boxShadow: '0 2px 6px rgba(220, 38, 38, 0.25)',
+              }}
             >
-              📊 تصدير الغيابات (Excel)
+              📄 تصدير كشف الغيابات (PDF)
             </button>
           </div>
         </div>
@@ -1240,6 +1252,22 @@ export default function StudentsPage() {
         }}
         currentStudyPeriod={selectedStudyPeriod !== 'ALL' ? selectedStudyPeriod : undefined}
         currentSection={selectedSection !== 'ALL' ? selectedSection : undefined}
+      />
+
+      {/* Attendance & Absences PDF Report Modal */}
+      <AttendancePdfReportModal
+        isOpen={showPdfReportModal}
+        onClose={() => setShowPdfReportModal(false)}
+        reportTitle="كشف غيابات وحضور الطلبة"
+        studyPeriodLabel={
+          selectedStudyPeriod === 'EVENING'
+            ? 'الدراسة المسائية'
+            : selectedStudyPeriod === 'MORNING'
+            ? 'الدراسة الصباحية'
+            : 'كافة الدراسات'
+        }
+        sectionLabel={selectedSection !== 'ALL' ? `شعبة ${selectedSection}` : 'كافة الشُعب'}
+        records={filteredStudents}
       />
     </div>
   );

@@ -8,6 +8,7 @@ import * as XLSX from 'xlsx';
 import CameraScanner from '../components/camera/CameraScanner';
 import Navbar from '../components/layout/Navbar';
 import SectionManagerModal from '../components/modals/SectionManagerModal';
+import AttendancePdfReportModal from '../components/modals/AttendancePdfReportModal';
 
 interface AttendanceRecord {
   id: string;
@@ -33,6 +34,7 @@ export default function HomePage() {
   const [isCreating, setIsCreating] = useState(false);
   const [dbSections, setDbSections] = useState<SectionItem[]>([]);
   const [showSectionModal, setShowSectionModal] = useState(false);
+  const [showSummaryPdfModal, setShowSummaryPdfModal] = useState(false);
 
   // Load dynamic sections from database
   const loadDynamicSections = useCallback(async () => {
@@ -87,6 +89,8 @@ export default function HomePage() {
   const [closedSummary, setClosedSummary] = useState<{
     lectureId: string;
     lectureName: string;
+    studyPeriod?: string;
+    section?: string;
     present: number;
     absent: number;
     total: number;
@@ -207,7 +211,11 @@ export default function HomePage() {
     setIsEnding(true);
     try {
       const summary = await lectureApi.close(lecture.id);
-      setClosedSummary(summary);
+      setClosedSummary({
+        ...summary,
+        studyPeriod: lecture?.studyPeriod,
+        section: lecture?.section,
+      });
       setLecture((prev: any) => (prev ? { ...prev, status: 'CLOSED' } : null));
       setSummaryTab(summary.absent > 0 ? 'absent' : 'present');
     } catch (err: any) {
@@ -1235,11 +1243,20 @@ export default function HomePage() {
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px' }}>
                 <button
                   className="btn btn-primary"
-                  onClick={handleExportSummaryExcel}
-                  id="export-summary-excel-btn"
-                  style={{ fontSize: '13px', fontWeight: '700' }}
+                  onClick={() => setShowSummaryPdfModal(true)}
+                  id="export-summary-pdf-btn"
+                  style={{
+                    fontSize: '13px',
+                    fontWeight: '700',
+                    backgroundColor: '#DC2626',
+                    borderColor: '#DC2626',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    boxShadow: '0 2px 6px rgba(220, 38, 38, 0.25)',
+                  }}
                 >
-                  تصدير كشف الحضور والغياب (Excel)
+                  📄 تصدير كشف الحضور والغياب (PDF)
                 </button>
 
                 <button
@@ -1260,6 +1277,38 @@ export default function HomePage() {
           onSectionsChanged={loadDynamicSections}
           initialPeriod={lectureStudyPeriod}
         />
+
+        {/* Closed Lecture Attendance & Absences PDF Modal */}
+        {closedSummary && (
+          <AttendancePdfReportModal
+            isOpen={showSummaryPdfModal}
+            onClose={() => setShowSummaryPdfModal(false)}
+            reportTitle={`كشف حضور وغياب - ${closedSummary.lectureName || 'المحاضرة'}`}
+            studyPeriodLabel={
+              closedSummary.studyPeriod === 'EVENING' ? 'الدراسة المسائية' : 'الدراسة الصباحية'
+            }
+            sectionLabel={closedSummary.section ? `شعبة ${closedSummary.section}` : 'كافة الشُعب'}
+            records={[
+              ...(closedSummary.presentStudents || []).map((s) => ({
+                id: s.studentId,
+                studentName: s.studentName,
+                studentCode: s.studentCode,
+                status: 'PRESENT',
+                registeredAt: s.registeredAt,
+                studyPeriod: closedSummary.studyPeriod,
+                section: closedSummary.section,
+              })),
+              ...(closedSummary.absentStudents || []).map((s) => ({
+                id: s.studentId,
+                studentName: s.studentName,
+                studentCode: s.studentCode,
+                status: 'ABSENT',
+                studyPeriod: closedSummary.studyPeriod,
+                section: closedSummary.section,
+              })),
+            ]}
+          />
+        )}
       </div>
     </div>
   );

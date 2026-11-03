@@ -693,4 +693,55 @@ body {
     margin: 0 !important;
     overflow: hidden !important;
   }
+
+  /* Attendance PDF Printable Report */
+  .attendance-pdf-modal-window {
+    position: static !important;
+    inset: auto !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    height: auto !important;
+    max-height: none !important;
+    background: transparent !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    border: none !important;
+    box-shadow: none !important;
+    overflow: visible !important;
+    display: block !important;
+  }
+
+  #printable-attendance-report,
+  #printable-attendance-report * {
+    visibility: visible !important;
+  }
+
+  #printable-attendance-report {
+    width: 100% !important;
+    max-width: 100% !important;
+    background: #FFFFFF !important;
+    color: #000000 !important;
+    margin: 0 auto !important;
+    padding: 10mm 8mm !important;
+    box-sizing: border-box !important;
+  }
+
+  #printable-attendance-report table {
+    width: 100% !important;
+    border-collapse: collapse !important;
+  }
+
+  #printable-attendance-report th,
+  #printable-attendance-report td {
+    border: 1px solid #374151 !important;
+    color: #000000 !important;
+    padding: 6px 8px !important;
+    background: transparent !important;
+  }
+
+  #printable-attendance-report tr {
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+  }
 }
+

@@ -6,6 +6,7 @@ import Link from 'next/link';
 import * as XLSX from 'xlsx';
 import Navbar from '../../components/layout/Navbar';
 import ResetAbsencesModal from '../../components/modals/ResetAbsencesModal';
+import AttendancePdfReportModal from '../../components/modals/AttendancePdfReportModal';
 
 interface AttendanceRecord {
   id: string;
@@ -36,6 +37,7 @@ export default function ReportsPage() {
   const [deleteConfirm, setDeleteConfirm] = useState<{ id: string; name: string } | null>(null);
   const [showResetModal, setShowResetModal] = useState(false);
   const [successBanner, setSuccessBanner] = useState<string | null>(null);
+  const [pdfLectureForReport, setPdfLectureForReport] = useState<Lecture | null>(null);
 
   useEffect(() => {
     loadLectures();
@@ -232,8 +234,14 @@ export default function ReportsPage() {
             </button>
 
             <button
-              className="btn btn-success btn-sm"
-              onClick={handleExportAllLecturesExcel}
+              className="btn btn-sm"
+              onClick={() => {
+                if (selectedLecture) {
+                  setPdfLectureForReport(selectedLecture);
+                } else if (lectures.length > 0) {
+                  setPdfLectureForReport(lectures[0]);
+                }
+              }}
               disabled={lectures.length === 0}
               style={{
                 fontSize: '13px',
@@ -242,15 +250,14 @@ export default function ReportsPage() {
                 alignItems: 'center',
                 gap: '8px',
                 padding: '8px 16px',
+                backgroundColor: '#DC2626',
+                color: '#FFFFFF',
+                border: 'none',
+                boxShadow: '0 2px 6px rgba(220, 38, 38, 0.25)',
               }}
-              title="تصدير جدول كل المحاضرات مع الإحصائيات إلى ملف إكسل"
+              title="تصدير كشف الغيابات والحضور بصيغة PDF الرسمية"
             >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-                <polyline points="7 10 12 15 17 10" />
-                <line x1="12" y1="15" x2="12" y2="3" />
-              </svg>
-              تصدير تقرير المحاضرات (Excel)
+              📄 تصدير كشف الغيابات (PDF)
             </button>
           </div>
         </div>
@@ -393,15 +400,17 @@ export default function ReportsPage() {
                           className="btn btn-ghost btn-sm"
                           onClick={(e) => {
                             e.stopPropagation();
-                            handleExportLectureDetailsExcel(lecture);
+                            setPdfLectureForReport(lecture);
                           }}
-                          style={{ padding: '4px 8px', fontSize: '12px', color: '#059669' }}
-                          title="تصدير هذه المحاضرة إلى Excel"
+                          style={{ padding: '4px 8px', fontSize: '12px', color: '#DC2626' }}
+                          title="تصدير كشف هذه المحاضرة كـ PDF"
                         >
-                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#059669" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-                            <polyline points="7 10 12 15 17 10" />
-                            <line x1="12" y1="15" x2="12" y2="3" />
+                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#DC2626" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                            <polyline points="14 2 14 8 20 8" />
+                            <line x1="16" y1="13" x2="8" y2="13" />
+                            <line x1="16" y1="17" x2="8" y2="17" />
+                            <polyline points="10 9 9 9 8 9" />
                           </svg>
                         </button>
                         <button
@@ -461,8 +470,8 @@ export default function ReportsPage() {
                   </div>
 
                   <button
-                    className="btn btn-success btn-sm"
-                    onClick={() => handleExportLectureDetailsExcel(selectedLecture)}
+                    className="btn btn-sm"
+                    onClick={() => setPdfLectureForReport(selectedLecture)}
                     disabled={selectedLecture.attendances.length === 0}
                     style={{
                       fontSize: '12.5px',
@@ -471,14 +480,13 @@ export default function ReportsPage() {
                       alignItems: 'center',
                       gap: '6px',
                       padding: '6px 12px',
+                      backgroundColor: '#DC2626',
+                      color: '#FFFFFF',
+                      border: 'none',
+                      boxShadow: '0 2px 6px rgba(220, 38, 38, 0.25)',
                     }}
                   >
-                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-                      <polyline points="7 10 12 15 17 10" />
-                      <line x1="12" y1="15" x2="12" y2="3" />
-                    </svg>
-                    تصدير سجل هذه المحاضرة (Excel)
+                    📄 تصدير سجل هذه المحاضرة (PDF)
                   </button>
                 </div>
 
@@ -646,6 +654,33 @@ export default function ReportsPage() {
           loadLectures();
         }}
       />
+
+      {/* Attendance & Absences PDF Report Modal */}
+      {pdfLectureForReport && (
+        <AttendancePdfReportModal
+          isOpen={!!pdfLectureForReport}
+          onClose={() => setPdfLectureForReport(null)}
+          reportTitle={`كشف غيابات وحضور - ${pdfLectureForReport.name}`}
+          studyPeriodLabel={
+            pdfLectureForReport.studyPeriod === 'EVENING'
+              ? 'الدراسة المسائية'
+              : 'الدراسة الصباحية'
+          }
+          sectionLabel={
+            pdfLectureForReport.section ? `شعبة ${pdfLectureForReport.section}` : 'كافة الشُعب'
+          }
+          lectureDate={pdfLectureForReport.startedAt}
+          records={pdfLectureForReport.attendances.map((rec) => ({
+            id: rec.id,
+            studentName: rec.studentName,
+            studentCode: rec.studentCode,
+            status: rec.status,
+            registeredAt: rec.registeredAt,
+            studyPeriod: pdfLectureForReport.studyPeriod || undefined,
+            section: pdfLectureForReport.section || undefined,
+          }))}
+        />
+      )}
     </div>
   );
 }
