@@ -21,6 +21,11 @@ function copyDirSync(src, dest) {
     } catch (e) {
       // Ignore individual file copy errors
     }
+    // Clean up .pnpm folder inside standalone so archive tools and Windows don't choke on path length
+    try {
+      fs.rmSync(pnpmDir, { recursive: true, force: true });
+      console.log('[Standalone] Cleaned up .pnpm directory from standalone build.');
+    } catch (_) {}
   }
 }
 
@@ -79,7 +84,14 @@ if (fs.existsSync(standaloneDir)) {
         }
       }
     }
+    // Clean up .pnpm folder inside standalone so archive tools and Windows don't choke on path length
+    try {
+      fs.rmSync(pnpmDir, { recursive: true, force: true });
+      console.log('[Standalone] Cleaned up .pnpm directory from standalone build.');
+    } catch (_) {}
   }
+
+  try { fs.rmSync(pnpmDir, { recursive: true, force: true }); console.log('[Standalone] Cleaned up .pnpm from standalone.'); } catch (_) {}
 
   console.log('[Standalone] Step 3: Ensuring critical packages from root node_modules...');
   const criticalPackages = [
@@ -110,6 +122,11 @@ if (fs.existsSync(standaloneDir)) {
         fs.cpSync(rootSrc, dest2, { recursive: true, dereference: true, force: true });
       } catch (_) {}
     }
+    // Clean up .pnpm folder inside standalone so archive tools and Windows don't choke on path length
+    try {
+      fs.rmSync(pnpmDir, { recursive: true, force: true });
+      console.log('[Standalone] Cleaned up .pnpm directory from standalone build.');
+    } catch (_) {}
   }
 
   console.log('[Standalone] All standalone assets and dependencies verified successfully.');

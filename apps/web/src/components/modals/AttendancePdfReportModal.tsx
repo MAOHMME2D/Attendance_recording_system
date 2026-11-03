@@ -1,6 +1,6 @@
 'use client';
 
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 
 export interface AttendancePdfRecord {
   id?: string;
@@ -36,6 +36,20 @@ export default function AttendancePdfReportModal({
   lectureDate,
   records,
 }: AttendancePdfReportModalProps) {
+  const [logoBase64, setLogoBase64] = useState<string | null>(null);
+
+  useEffect(() => {
+    // Convert logo to base64 so it embeds in print/PDF
+    fetch('/college-logo.png')
+      .then(res => res.blob())
+      .then(blob => {
+        const reader = new FileReader();
+        reader.onloadend = () => setLogoBase64(reader.result as string);
+        reader.readAsDataURL(blob);
+      })
+      .catch(() => {});
+  }, []);
+
   if (!isOpen) return null;
 
   const handlePrint = () => {
@@ -49,12 +63,13 @@ export default function AttendancePdfReportModal({
     }, 1000);
   };
 
-  const currentDateFormatted = lectureDate || new Date().toLocaleDateString('ar-IQ', {
-    weekday: 'long',
-    year: 'numeric',
-    month: 'long',
-    day: 'numeric',
-  });
+  const currentDateFormatted = lectureDate
+    ? new Date(lectureDate).toLocaleDateString('ar-IQ', {
+        weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+      })
+    : new Date().toLocaleDateString('ar-IQ', {
+        weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+      });
 
   // Calculate totals
   const totalStudents = records.length;
@@ -65,6 +80,13 @@ export default function AttendancePdfReportModal({
   const totalAbsent = isLectureSession
     ? records.filter(r => r.status === 'ABSENT').length
     : records.reduce((acc, r) => acc + (r.absentCount || 0), 0);
+
+  // Colors
+  const NAVY = '#1B2A4A';
+  const GOLD = '#C5A028';
+  const GOLD_LIGHT = '#F5ECD0';
+  const GREEN_DARK = '#065F46';
+  const RED_DARK = '#991B1B';
 
   return (
     <div
@@ -117,8 +139,8 @@ export default function AttendancePdfReportModal({
                 width: '38px',
                 height: '38px',
                 borderRadius: '10px',
-                background: '#FEE2E2',
-                color: '#DC2626',
+                background: GOLD_LIGHT,
+                color: GOLD,
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
@@ -145,7 +167,7 @@ export default function AttendancePdfReportModal({
                 padding: '9px 20px',
                 borderRadius: '10px',
                 border: 'none',
-                background: '#DC2626',
+                background: NAVY,
                 color: '#FFFFFF',
                 fontWeight: '700',
                 fontSize: '13px',
@@ -153,7 +175,7 @@ export default function AttendancePdfReportModal({
                 display: 'flex',
                 alignItems: 'center',
                 gap: '8px',
-                boxShadow: '0 4px 12px rgba(220, 38, 38, 0.25)',
+                boxShadow: '0 4px 12px rgba(27, 42, 74, 0.3)',
               }}
             >
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
@@ -185,11 +207,11 @@ export default function AttendancePdfReportModal({
         <div
           className="no-print"
           style={{
-            background: '#EFF6FF',
-            borderBottom: '1px solid #DBEAFE',
+            background: GOLD_LIGHT,
+            borderBottom: `1px solid ${GOLD}33`,
             padding: '10px 24px',
             fontSize: '12px',
-            color: '#1E40AF',
+            color: '#78650D',
             display: 'flex',
             alignItems: 'center',
             gap: '8px',
@@ -197,7 +219,7 @@ export default function AttendancePdfReportModal({
         >
           <span>💡</span>
           <span>
-            <strong>طريقة حفظ الملف بصيغة PDF:</strong> عند الضغط على <strong>"تصدير / حفظ كـ PDF"</strong>، اختر من خانة <strong>"الوجهة" (Destination)</strong> خيار <strong>"حفظ بتنسيق PDF" (Save as PDF)</strong> ثم اضغط حفظ.
+            <strong>طريقة حفظ الملف بصيغة PDF:</strong> عند الضغط على <strong>&quot;تصدير / حفظ كـ PDF&quot;</strong>، اختر من خانة <strong>&quot;الوجهة&quot; (Destination)</strong> خيار <strong>&quot;حفظ بتنسيق PDF&quot; (Save as PDF)</strong> ثم اضغط حفظ.
           </span>
         </div>
 
@@ -209,77 +231,141 @@ export default function AttendancePdfReportModal({
             style={{
               background: '#FFFFFF',
               borderRadius: '12px',
-              padding: '24px 30px',
+              padding: '28px 32px',
               color: '#111827',
-              fontFamily: 'system-ui, -apple-system, sans-serif',
+              fontFamily: "'Segoe UI', 'Tahoma', 'Arial', sans-serif",
               boxShadow: '0 4px 20px rgba(0,0,0,0.06)',
               margin: '0 auto',
               maxWidth: '850px',
             }}
           >
-            {/* Header: Republic of Iraq & College Info */}
+            {/* ===== OFFICIAL HEADER ===== */}
             <div
               style={{
-                display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'center',
-                borderBottom: '2.5px solid #1F2937',
-                paddingBottom: '14px',
-                marginBottom: '18px',
+                borderBottom: `3px double ${NAVY}`,
+                paddingBottom: '16px',
+                marginBottom: '20px',
               }}
             >
-              <div style={{ textAlign: 'right' }}>
-                <div style={{ fontSize: '13px', fontWeight: '800', color: '#111827' }}>
-                  جمهورية العراق
+              {/* Top Row: Logo centered, text on sides */}
+              <div
+                style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  direction: 'rtl',
+                }}
+              >
+                {/* Right Side - Arabic text */}
+                <div style={{ textAlign: 'right', flex: 1 }}>
+                  <div style={{ fontSize: '14px', fontWeight: '800', color: NAVY, lineHeight: '1.8' }}>
+                    جمهورية العراق
+                  </div>
+                  <div style={{ fontSize: '12.5px', fontWeight: '700', color: '#374151', lineHeight: '1.7' }}>
+                    وزارة التعليم العالي والبحث العلمي
+                  </div>
+                  <div style={{ fontSize: '13.5px', fontWeight: '800', color: NAVY, lineHeight: '1.7' }}>
+                    جامعة الفرات الأوسط التقنية
+                  </div>
+                  <div style={{ fontSize: '13px', fontWeight: '800', color: GOLD, lineHeight: '1.7' }}>
+                    الكلية التقنية / كربلاء
+                  </div>
                 </div>
-                <div style={{ fontSize: '12px', fontWeight: '700', color: '#374151' }}>
-                  وزارة التعليم العالي والبحث العلمي
+
+                {/* Center - Logo */}
+                <div style={{ textAlign: 'center', flex: '0 0 auto', margin: '0 20px' }}>
+                  {logoBase64 ? (
+                    <img
+                      src={logoBase64}
+                      alt="شعار الكلية"
+                      style={{
+                        width: '85px',
+                        height: '85px',
+                        objectFit: 'contain',
+                      }}
+                    />
+                  ) : (
+                    <img
+                      src="/college-logo.png"
+                      alt="شعار الكلية"
+                      style={{
+                        width: '85px',
+                        height: '85px',
+                        objectFit: 'contain',
+                      }}
+                      onError={(e) => {
+                        (e.target as HTMLElement).style.display = 'none';
+                      }}
+                    />
+                  )}
                 </div>
-                <div style={{ fontSize: '14px', fontWeight: '800', color: '#1E40AF', marginTop: '2px' }}>
-                  كلية البوليتكنك - كربلاء
-                </div>
-                <div style={{ fontSize: '12px', fontWeight: '700', color: '#4B5563' }}>
-                  قسم تقنيات المختبرات الطبية
+
+                {/* Left Side - English text */}
+                <div style={{ textAlign: 'left', flex: 1, direction: 'ltr' }}>
+                  <div style={{ fontSize: '11.5px', fontWeight: '700', color: NAVY, lineHeight: '1.8' }}>
+                    Republic of Iraq
+                  </div>
+                  <div style={{ fontSize: '10.5px', fontWeight: '600', color: '#374151', lineHeight: '1.7' }}>
+                    Ministry of Higher Education
+                  </div>
+                  <div style={{ fontSize: '11px', fontWeight: '700', color: NAVY, lineHeight: '1.7' }}>
+                    Al-Furat Al-Awsat Technical Univ.
+                  </div>
+                  <div style={{ fontSize: '11px', fontWeight: '700', color: GOLD, lineHeight: '1.7' }}>
+                    Technical College / Karbala
+                  </div>
                 </div>
               </div>
 
-              {/* College Logo */}
-              <div style={{ textAlign: 'center' }}>
-                <img
-                  src="/college-logo.png"
-                  alt="College Logo"
+              {/* Department Name */}
+              <div
+                style={{
+                  textAlign: 'center',
+                  marginTop: '10px',
+                  padding: '6px 0',
+                  borderTop: `1.5px solid ${NAVY}22`,
+                }}
+              >
+                <span
                   style={{
-                    width: '64px',
-                    height: '64px',
-                    objectFit: 'contain',
+                    fontSize: '14px',
+                    fontWeight: '900',
+                    color: NAVY,
+                    letterSpacing: '0.5px',
                   }}
-                  onError={(e) => {
-                    (e.target as HTMLElement).style.display = 'none';
+                >
+                  قسم تقنيات المختبرات الطبية
+                </span>
+                <span style={{ color: '#9CA3AF', margin: '0 10px' }}>|</span>
+                <span
+                  style={{
+                    fontSize: '11.5px',
+                    fontWeight: '600',
+                    color: '#6B7280',
                   }}
-                />
-              </div>
-
-              <div style={{ textAlign: 'left', direction: 'ltr' }}>
-                <div style={{ fontSize: '12px', color: '#6B7280' }}>
-                  Date: {new Date().toISOString().slice(0, 10)}
-                </div>
-                <div style={{ fontSize: '11px', color: '#9CA3AF' }}>
-                  Smart Attendance System
-                </div>
-                <div style={{ fontSize: '11px', fontWeight: '700', color: '#1F2937', marginTop: '4px' }}>
-                  {studyPeriodLabel || ''}
-                </div>
+                >
+                  Dept. of Medical Laboratory Techniques
+                </span>
               </div>
             </div>
 
-            {/* Document Title Banner */}
-            <div style={{ textAlign: 'center', marginBottom: '18px' }}>
+            {/* ===== DOCUMENT TITLE ===== */}
+            <div
+              style={{
+                textAlign: 'center',
+                marginBottom: '18px',
+                padding: '12px 16px',
+                background: `linear-gradient(135deg, ${NAVY}08, ${GOLD}12)`,
+                borderRadius: '10px',
+                border: `1px solid ${GOLD}30`,
+              }}
+            >
               <h2
                 style={{
                   fontSize: '20px',
                   fontWeight: '900',
-                  color: '#111827',
-                  margin: '0 0 6px 0',
+                  color: NAVY,
+                  margin: '0 0 8px 0',
                   letterSpacing: '-0.3px',
                 }}
               >
@@ -290,72 +376,118 @@ export default function AttendancePdfReportModal({
                   display: 'flex',
                   justifyContent: 'center',
                   alignItems: 'center',
-                  gap: '16px',
+                  gap: '20px',
                   fontSize: '12.5px',
                   color: '#4B5563',
                   fontWeight: '600',
                   flexWrap: 'wrap',
                 }}
               >
-                {studyPeriodLabel && <span>الدراسة: <strong>{studyPeriodLabel}</strong></span>}
-                {sectionLabel && <span>الشعبة: <strong>{sectionLabel}</strong></span>}
-                <span>التاريخ: <strong>{currentDateFormatted}</strong></span>
+                {studyPeriodLabel && (
+                  <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                    <span style={{ color: GOLD, fontSize: '14px' }}>◆</span>
+                    الدراسة: <strong style={{ color: NAVY }}>{studyPeriodLabel}</strong>
+                  </span>
+                )}
+                {sectionLabel && (
+                  <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                    <span style={{ color: GOLD, fontSize: '14px' }}>◆</span>
+                    الشعبة: <strong style={{ color: NAVY }}>{sectionLabel}</strong>
+                  </span>
+                )}
+                <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                  <span style={{ color: GOLD, fontSize: '14px' }}>◆</span>
+                  التاريخ: <strong style={{ color: NAVY }}>{currentDateFormatted}</strong>
+                </span>
               </div>
             </div>
 
-            {/* Statistics Mini-Bar */}
+            {/* ===== STATISTICS BAR ===== */}
             <div
               style={{
                 display: 'grid',
-                gridTemplateColumns: isLectureSession ? 'repeat(3, 1fr)' : 'repeat(3, 1fr)',
-                gap: '10px',
-                marginBottom: '16px',
-                padding: '10px 14px',
-                background: '#F9FAFB',
-                borderRadius: '8px',
-                border: '1px solid #E5E7EB',
-                textAlign: 'center',
+                gridTemplateColumns: 'repeat(3, 1fr)',
+                gap: '12px',
+                marginBottom: '18px',
               }}
             >
-              <div>
-                <div style={{ fontSize: '11px', color: '#6B7280', fontWeight: '600' }}>إجمالي الطلبة</div>
-                <div style={{ fontSize: '16px', fontWeight: '800', color: '#111827' }}>{totalStudents}</div>
+              <div
+                style={{
+                  textAlign: 'center',
+                  padding: '12px 10px',
+                  background: '#F8FAFC',
+                  borderRadius: '10px',
+                  border: `1.5px solid ${NAVY}20`,
+                  borderBottom: `3px solid ${NAVY}`,
+                }}
+              >
+                <div style={{ fontSize: '10.5px', color: '#6B7280', fontWeight: '700', marginBottom: '4px', letterSpacing: '0.3px' }}>
+                  إجمالي الطلبة
+                </div>
+                <div style={{ fontSize: '22px', fontWeight: '900', color: NAVY }}>{totalStudents}</div>
               </div>
-              <div>
-                <div style={{ fontSize: '11px', color: '#065F46', fontWeight: '600' }}>مجموع الحضور</div>
-                <div style={{ fontSize: '16px', fontWeight: '800', color: '#059669' }}>{totalPresent}</div>
+              <div
+                style={{
+                  textAlign: 'center',
+                  padding: '12px 10px',
+                  background: '#F0FDF4',
+                  borderRadius: '10px',
+                  border: '1.5px solid #BBF7D020',
+                  borderBottom: `3px solid ${GREEN_DARK}`,
+                }}
+              >
+                <div style={{ fontSize: '10.5px', color: GREEN_DARK, fontWeight: '700', marginBottom: '4px', letterSpacing: '0.3px' }}>
+                  مجموع الحضور
+                </div>
+                <div style={{ fontSize: '22px', fontWeight: '900', color: '#059669' }}>{totalPresent}</div>
               </div>
-              <div>
-                <div style={{ fontSize: '11px', color: '#991B1B', fontWeight: '600' }}>مجموع الغيابات</div>
-                <div style={{ fontSize: '16px', fontWeight: '800', color: '#DC2626' }}>{totalAbsent}</div>
+              <div
+                style={{
+                  textAlign: 'center',
+                  padding: '12px 10px',
+                  background: '#FEF2F2',
+                  borderRadius: '10px',
+                  border: '1.5px solid #FECACA20',
+                  borderBottom: `3px solid ${RED_DARK}`,
+                }}
+              >
+                <div style={{ fontSize: '10.5px', color: RED_DARK, fontWeight: '700', marginBottom: '4px', letterSpacing: '0.3px' }}>
+                  مجموع الغيابات
+                </div>
+                <div style={{ fontSize: '22px', fontWeight: '900', color: '#DC2626' }}>{totalAbsent}</div>
               </div>
             </div>
 
-            {/* Attendance Table */}
+            {/* ===== ATTENDANCE TABLE ===== */}
             <table
               style={{
                 width: '100%',
                 borderCollapse: 'collapse',
                 fontSize: '12px',
-                marginBottom: '24px',
+                marginBottom: '28px',
               }}
             >
               <thead>
-                <tr style={{ backgroundColor: '#F3F4F6' }}>
-                  <th style={{ border: '1.5px solid #374151', padding: '8px 6px', width: '38px', textAlign: 'center' }}>ت</th>
-                  <th style={{ border: '1.5px solid #374151', padding: '8px 10px', textAlign: 'right' }}>اسم الطالب الثلاثي</th>
-                  <th style={{ border: '1.5px solid #374151', padding: '8px 8px', width: '100px', textAlign: 'center' }}>الباركود / ID</th>
-                  <th style={{ border: '1.5px solid #374151', padding: '8px 8px', width: '70px', textAlign: 'center' }}>الشعبة</th>
+                <tr
+                  style={{
+                    backgroundColor: NAVY,
+                    color: '#FFFFFF',
+                  }}
+                >
+                  <th style={{ border: `1.5px solid ${NAVY}`, padding: '9px 6px', width: '38px', textAlign: 'center', fontWeight: '700' }}>ت</th>
+                  <th style={{ border: `1.5px solid ${NAVY}`, padding: '9px 10px', textAlign: 'right', fontWeight: '700' }}>اسم الطالب الثلاثي</th>
+                  <th style={{ border: `1.5px solid ${NAVY}`, padding: '9px 8px', width: '100px', textAlign: 'center', fontWeight: '700' }}>الباركود / ID</th>
+                  <th style={{ border: `1.5px solid ${NAVY}`, padding: '9px 8px', width: '70px', textAlign: 'center', fontWeight: '700' }}>الشعبة</th>
                   {isLectureSession ? (
                     <>
-                      <th style={{ border: '1.5px solid #374151', padding: '8px 8px', width: '85px', textAlign: 'center' }}>الحالة</th>
-                      <th style={{ border: '1.5px solid #374151', padding: '8px 8px', width: '100px', textAlign: 'center' }}>وقت التسجيل</th>
+                      <th style={{ border: `1.5px solid ${NAVY}`, padding: '9px 8px', width: '85px', textAlign: 'center', fontWeight: '700' }}>الحالة</th>
+                      <th style={{ border: `1.5px solid ${NAVY}`, padding: '9px 8px', width: '100px', textAlign: 'center', fontWeight: '700' }}>وقت التسجيل</th>
                     </>
                   ) : (
                     <>
-                      <th style={{ border: '1.5px solid #374151', padding: '8px 8px', width: '75px', textAlign: 'center' }}>الحضور</th>
-                      <th style={{ border: '1.5px solid #374151', padding: '8px 8px', width: '75px', textAlign: 'center' }}>الغياب</th>
-                      <th style={{ border: '1.5px solid #374151', padding: '8px 8px', width: '85px', textAlign: 'center' }}>الموقف</th>
+                      <th style={{ border: `1.5px solid ${NAVY}`, padding: '9px 8px', width: '75px', textAlign: 'center', fontWeight: '700' }}>الحضور</th>
+                      <th style={{ border: `1.5px solid ${NAVY}`, padding: '9px 8px', width: '75px', textAlign: 'center', fontWeight: '700' }}>الغياب</th>
+                      <th style={{ border: `1.5px solid ${NAVY}`, padding: '9px 8px', width: '85px', textAlign: 'center', fontWeight: '700' }}>الموقف</th>
                     </>
                   )}
                 </tr>
@@ -373,39 +505,37 @@ export default function AttendancePdfReportModal({
                 ) : (
                   records.map((r, idx) => {
                     const isAbsent = r.status === 'ABSENT' || (r.absentCount != null && r.absentCount > 0);
+                    const rowBg = idx % 2 === 0 ? '#FFFFFF' : '#F8FAFC';
                     return (
-                      <tr
-                        key={r.id || idx}
-                        style={{
-                          backgroundColor: idx % 2 === 0 ? '#FFFFFF' : '#F9FAFB',
-                        }}
-                      >
-                        <td style={{ border: '1px solid #4B5563', textAlign: 'center', padding: '6px 4px', fontWeight: '700' }}>
+                      <tr key={r.id || idx} style={{ backgroundColor: rowBg }}>
+                        <td style={{ border: `1px solid ${NAVY}40`, textAlign: 'center', padding: '7px 4px', fontWeight: '700', color: NAVY }}>
                           {r.orderIndex != null ? r.orderIndex : idx + 1}
                         </td>
-                        <td style={{ border: '1px solid #4B5563', padding: '6px 10px', fontWeight: '700', color: '#111827' }}>
+                        <td style={{ border: `1px solid ${NAVY}40`, padding: '7px 10px', fontWeight: '700', color: '#111827' }}>
                           {r.studentName || r.name || 'بدون اسم'}
                         </td>
-                        <td style={{ border: '1px solid #4B5563', textAlign: 'center', padding: '6px 6px', fontFamily: 'monospace', color: '#374151' }}>
+                        <td style={{ border: `1px solid ${NAVY}40`, textAlign: 'center', padding: '7px 6px', fontFamily: 'monospace', color: '#374151', fontSize: '11px' }}>
                           {r.studentCode || '-'}
                         </td>
-                        <td style={{ border: '1px solid #4B5563', textAlign: 'center', padding: '6px 6px' }}>
-                          {r.section ? `شعبة ${r.section}` : '-'}
+                        <td style={{ border: `1px solid ${NAVY}40`, textAlign: 'center', padding: '7px 6px', fontSize: '11px', color: '#4B5563' }}>
+                          {r.section ? `${r.section}` : '-'}
                         </td>
                         {isLectureSession ? (
                           <>
                             <td
                               style={{
-                                border: '1px solid #4B5563',
+                                border: `1px solid ${NAVY}40`,
                                 textAlign: 'center',
-                                padding: '6px 6px',
+                                padding: '7px 6px',
                                 fontWeight: '800',
+                                fontSize: '11.5px',
                                 color: r.status === 'PRESENT' ? '#047857' : '#B91C1C',
+                                backgroundColor: r.status === 'PRESENT' ? '#ECFDF5' : '#FEF2F2',
                               }}
                             >
-                              {r.status === 'PRESENT' ? 'حاضر' : 'غائب'}
+                              {r.status === 'PRESENT' ? '✓ حاضر' : '✗ غائب'}
                             </td>
-                            <td style={{ border: '1px solid #4B5563', textAlign: 'center', padding: '6px 6px', fontSize: '11px', color: '#4B5563' }}>
+                            <td style={{ border: `1px solid ${NAVY}40`, textAlign: 'center', padding: '7px 6px', fontSize: '11px', color: '#4B5563' }}>
                               {r.registeredAt
                                 ? new Date(r.registeredAt).toLocaleTimeString('ar-IQ', { hour: '2-digit', minute: '2-digit' })
                                 : '-'}
@@ -413,32 +543,39 @@ export default function AttendancePdfReportModal({
                           </>
                         ) : (
                           <>
-                            <td style={{ border: '1px solid #4B5563', textAlign: 'center', padding: '6px 6px', fontWeight: '700', color: '#047857' }}>
+                            <td style={{ border: `1px solid ${NAVY}40`, textAlign: 'center', padding: '7px 6px', fontWeight: '800', color: '#047857' }}>
                               {r.presentCount || 0}
                             </td>
-                            <td style={{ border: '1px solid #4B5563', textAlign: 'center', padding: '6px 6px', fontWeight: '800', color: isAbsent ? '#B91C1C' : '#374151' }}>
+                            <td style={{ border: `1px solid ${NAVY}40`, textAlign: 'center', padding: '7px 6px', fontWeight: '800', color: isAbsent ? '#B91C1C' : '#374151' }}>
                               {r.absentCount || 0}
                             </td>
                             <td
                               style={{
-                                border: '1px solid #4B5563',
+                                border: `1px solid ${NAVY}40`,
                                 textAlign: 'center',
-                                padding: '6px 6px',
+                                padding: '7px 6px',
                                 fontSize: '11px',
-                                fontWeight: '700',
+                                fontWeight: '800',
                                 color:
                                   (r.absentCount || 0) >= 4
-                                    ? '#B91C1C'
+                                    ? '#FFFFFF'
                                     : (r.absentCount || 0) >= 2
-                                    ? '#D97706'
+                                    ? '#92400E'
                                     : '#047857',
+                                backgroundColor:
+                                  (r.absentCount || 0) >= 4
+                                    ? '#DC2626'
+                                    : (r.absentCount || 0) >= 2
+                                    ? '#FEF3C7'
+                                    : '#ECFDF5',
+                                borderRadius: '0',
                               }}
                             >
                               {(r.absentCount || 0) >= 4
-                                ? 'إنذار نهائي'
+                                ? '⚠ إنذار نهائي'
                                 : (r.absentCount || 0) >= 2
-                                ? 'إنذار أول'
-                                : 'مستمر'}
+                                ? '⚡ إنذار أول'
+                                : '✓ مستمر'}
                             </td>
                           </>
                         )}
@@ -449,12 +586,12 @@ export default function AttendancePdfReportModal({
               </tbody>
             </table>
 
-            {/* Department Signatures Section */}
+            {/* ===== DEPARTMENT SIGNATURES ===== */}
             <div
               style={{
-                marginTop: '36px',
-                paddingTop: '16px',
-                borderTop: '1.5px dashed #9CA3AF',
+                marginTop: '32px',
+                paddingTop: '18px',
+                borderTop: `2px solid ${NAVY}`,
                 display: 'grid',
                 gridTemplateColumns: 'repeat(3, 1fr)',
                 textAlign: 'center',
@@ -464,23 +601,43 @@ export default function AttendancePdfReportModal({
               }}
             >
               <div>
-                <div style={{ fontSize: '12px', fontWeight: '700', color: '#374151', marginBottom: '40px' }}>
+                <div style={{ fontSize: '13px', fontWeight: '800', color: NAVY, marginBottom: '44px' }}>
                   أستاذ المادة
                 </div>
-                <div style={{ fontSize: '11px', color: '#6B7280' }}>التوقيع: ..........................</div>
+                <div style={{ borderTop: `1.5px solid ${NAVY}40`, width: '70%', margin: '0 auto', paddingTop: '6px', fontSize: '11px', color: '#6B7280' }}>
+                  التوقيع والتاريخ
+                </div>
               </div>
               <div>
-                <div style={{ fontSize: '12px', fontWeight: '700', color: '#374151', marginBottom: '40px' }}>
+                <div style={{ fontSize: '13px', fontWeight: '800', color: NAVY, marginBottom: '44px' }}>
                   مقرر القسم
                 </div>
-                <div style={{ fontSize: '11px', color: '#6B7280' }}>التوقيع: ..........................</div>
+                <div style={{ borderTop: `1.5px solid ${NAVY}40`, width: '70%', margin: '0 auto', paddingTop: '6px', fontSize: '11px', color: '#6B7280' }}>
+                  التوقيع والتاريخ
+                </div>
               </div>
               <div>
-                <div style={{ fontSize: '12px', fontWeight: '700', color: '#374151', marginBottom: '40px' }}>
+                <div style={{ fontSize: '13px', fontWeight: '800', color: NAVY, marginBottom: '44px' }}>
                   رئيس القسم
                 </div>
-                <div style={{ fontSize: '11px', color: '#6B7280' }}>التوقيع: ..........................</div>
+                <div style={{ borderTop: `1.5px solid ${NAVY}40`, width: '70%', margin: '0 auto', paddingTop: '6px', fontSize: '11px', color: '#6B7280' }}>
+                  التوقيع والتاريخ
+                </div>
               </div>
+            </div>
+
+            {/* ===== FOOTER NOTE ===== */}
+            <div
+              style={{
+                marginTop: '20px',
+                paddingTop: '10px',
+                borderTop: '1px dashed #D1D5DB',
+                textAlign: 'center',
+                fontSize: '10px',
+                color: '#9CA3AF',
+              }}
+            >
+              تم إعداد هذا الكشف بواسطة نظام تسجيل الحضور الذكي — Smart Attendance Recording System
             </div>
           </div>
         </div>
@@ -520,4 +677,3 @@ export default function AttendancePdfReportModal({
     </div>
   );
 }
-
