@@ -36,20 +36,51 @@ if (Test-Path $dbPath) {
     Write-Host "[OK] Database backed up safely: backups\attendance_backup_$timestamp.db" -ForegroundColor Green
 }
 
-# 2. Look for update.zip (local first, then GitHub)
+# 2. Look for update.zip (local first, then GitHub release asset)
 $zipPath = Join-Path $RepoRoot "update.zip"
+$releaseHint = ""
 
 if (-not (Test-Path $zipPath)) {
     if ($GitHubRepo -ne "") {
         Write-Host "[*] Checking for updates on GitHub ($GitHubRepo)..." -ForegroundColor Yellow
         try {
             [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-            $downloadUrl = "https://github.com/$GitHubRepo/releases/latest/download/update.zip"
-            $client = New-Object System.Net.WebClient
-            $client.DownloadFile($downloadUrl, $zipPath)
-            Write-Host "[OK] Update downloaded successfully from GitHub." -ForegroundColor Green
+            $headers = @{
+                "User-Agent" = "Attendance-Updater"
+                "Accept"     = "application/vnd.github+json"
+            }
+            $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$GitHubRepo/releases/latest" -Headers $headers
+            $tag = $release.tag_name
+            Write-Host "[*] Latest release: $tag" -ForegroundColor Cyan
+
+            $asset = $release.assets | Where-Object { $_.name -eq "update.zip" } | Select-Object -First 1
+            if (-not $asset) {
+                $asset = $release.assets | Where-Object { $_.name -like "*.zip" } | Select-Object -First 1
+            }
+
+            if ($asset -and $asset.browser_download_url) {
+                Write-Host "[*] Downloading $($asset.name) ..." -ForegroundColor Yellow
+                $curl = Join-Path $env:SystemRoot "System32\curl.exe"
+                if (Test-Path $curl) {
+                    & $curl -L --fail --retry 2 -A "Attendance-Updater" -o $zipPath $asset.browser_download_url
+                    if ($LASTEXITCODE -ne 0) { throw "Download failed (curl exit $LASTEXITCODE)" }
+                } else {
+                    Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $zipPath -Headers @{ "User-Agent" = "Attendance-Updater" } -UseBasicParsing
+                }
+                if ((Test-Path $zipPath) -and ((Get-Item $zipPath).Length -gt 0)) {
+                    Write-Host "[OK] Update downloaded successfully from GitHub ($tag)." -ForegroundColor Green
+                } else {
+                    Remove-Item -Path $zipPath -Force -ErrorAction SilentlyContinue
+                    throw "Downloaded file is empty"
+                }
+            } else {
+                $releaseHint = $release.html_url
+                Write-Host "[!] Release $tag exists, but update.zip is not attached to it." -ForegroundColor DarkYellow
+                Write-Host "    The release text is not the file. Upload update.zip as a release asset." -ForegroundColor DarkYellow
+            }
         } catch {
-            Write-Host "[!] No update found on GitHub (no release published yet, or no internet)." -ForegroundColor DarkYellow
+            Write-Host "[!] Could not download the update: $($_.Exception.Message)" -ForegroundColor DarkYellow
+            Remove-Item -Path $zipPath -Force -ErrorAction SilentlyContinue
         }
     }
 }
@@ -59,7 +90,13 @@ if (-not (Test-Path $zipPath)) {
     Write-Host "========================================================" -ForegroundColor Red
     Write-Host "   [!] No update file found (update.zip)" -ForegroundColor Red
     Write-Host ""
-    Write-Host "   How to update:" -ForegroundColor White
+    if ($releaseHint) {
+        Write-Host "   A release is published, but the zip file was not uploaded." -ForegroundColor White
+        Write-Host "   Open the release and attach the file named update.zip:" -ForegroundColor White
+        Write-Host "   $releaseHint" -ForegroundColor Yellow
+        Write-Host ""
+    }
+    Write-Host "   Or update manually:" -ForegroundColor White
     Write-Host "   1. Place 'update.zip' in this program folder." -ForegroundColor White
     Write-Host "   2. Run 'Update_System.bat' again." -ForegroundColor White
     Write-Host "========================================================" -ForegroundColor Red
