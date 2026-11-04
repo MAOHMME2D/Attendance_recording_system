@@ -19,3 +19,4 @@ if exist "%~dp0..\bin\node.exe" (
 )
 
 if errorlevel 1 pause
+

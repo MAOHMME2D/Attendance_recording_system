@@ -9,26 +9,16 @@ export default function Navbar() {
 
   return (
     <nav className="nav-bar no-print" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px' }}>
-      <Link href="/" className="nav-logo" style={{ display: 'flex', alignItems: 'center', gap: '12px', textDecoration: 'none' }}>
+      <Link href="/" className="nav-logo">
         <img
-          src="/college-logo.png"
-          alt="كلية البوليتكنك | قسم تقنيات المختبرات الطبية"
-          style={{
-            height: '40px',
-            objectFit: 'contain',
-            background: '#FFFFFF',
-            padding: '2px 8px',
-            borderRadius: '8px',
-            boxShadow: '0 2px 8px rgba(0,0,0,0.15)',
-          }}
+          src="/navbar-logo.png"
+          alt="كلية البوليتكنك - كربلاء | Polytechnic College - Karbala"
+          className="nav-brand-mark"
         />
-        <div style={{ display: 'flex', flexDirection: 'column' }}>
-          <span style={{ fontSize: '15px', fontWeight: '800', lineHeight: 1.2, color: '#FFFFFF' }}>
-            نظام تسجيل الحضور الذكي
-          </span>
-          <span style={{ fontSize: '11px', color: '#E5E7EB', fontWeight: '600' }}>
-            كلية البوليتكنك | قسم تقنيات المختبرات الطبية
-          </span>
+        <span className="nav-brand-rule" aria-hidden="true" />
+        <div className="nav-brand-copy">
+          <span className="nav-brand-title">نظام تسجيل الحضور الذكي</span>
+          <span className="nav-brand-sub">قسم تقنيات المختبرات الطبية</span>
         </div>
       </Link>
 

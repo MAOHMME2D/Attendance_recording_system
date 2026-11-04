@@ -167,16 +167,17 @@ function AttendContent() {
           <div className="checkin-success">
             <img
               src="/college-logo.png"
-              alt="كلية البوليتكنك - كربلاء"
+              alt="جامعة الفرات الأوسط التقنية"
               style={{
-                maxHeight: '44px',
-                maxWidth: '85%',
+                height: '56px',
+                width: '56px',
                 margin: '0 auto 8px auto',
                 objectFit: 'contain',
-                background: 'rgba(255, 255, 255, 0.95)',
-                padding: '3px 12px',
-                borderRadius: '8px',
-                display: 'inline-block'
+                background: '#FFFFFF',
+                padding: '3px',
+                borderRadius: '50%',
+                display: 'inline-block',
+                boxShadow: '0 2px 8px rgba(0,0,0,0.1)'
               }}
             />
             <div className="success-icon" style={{ background: '#ECFDF5', color: '#059669', border: '2px solid #10B981', width: '64px', height: '64px', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
@@ -256,15 +257,15 @@ function AttendContent() {
         <div style={{ textAlign: 'center', marginBottom: '24px' }}>
           <img
             src="/college-logo.png"
-            alt="كلية البوليتكنك - كربلاء"
+            alt="جامعة الفرات الأوسط التقنية"
             style={{
-              maxHeight: '48px',
-              maxWidth: '90%',
+              height: '64px',
+              width: '64px',
               margin: '0 auto 14px auto',
               objectFit: 'contain',
-              background: 'rgba(255, 255, 255, 0.95)',
-              padding: '4px 14px',
-              borderRadius: '10px',
+              background: '#FFFFFF',
+              padding: '4px',
+              borderRadius: '50%',
               display: 'inline-block',
               boxShadow: '0 4px 12px rgba(0,0,0,0.1)'
             }}

@@ -4,6 +4,10 @@ import './globals.css';
 export const metadata: Metadata = {
   title: 'كلية البوليتكنك | قسم تقنيات المختبرات الطبية',
   description: 'نظام تسجيل الحضور الذكي - كلية البوليتكنك | قسم تقنيات المختبرات الطبية - تطوير: Mohammed Redha',
+  icons: {
+    icon: [{ url: '/favicon.ico', sizes: '64x64' }],
+    apple: [{ url: '/apple-touch-icon.png', sizes: '180x180' }],
+  },
 };
 
 export default function RootLayout({

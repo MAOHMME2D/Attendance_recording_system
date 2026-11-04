@@ -124,19 +124,20 @@ export default function StudentQrCardModal({ student, onClose }: StudentQrCardMo
           <div style={{ marginBottom: '14px' }}>
             <img
               src="/college-logo.png"
-              alt="كلية البوليتكنك - كربلاء"
+              alt="جامعة الفرات الأوسط التقنية"
               style={{
-                height: '42px',
+                height: '48px',
+                width: '48px',
                 objectFit: 'contain',
                 background: '#FFFFFF',
-                padding: '3px 10px',
-                borderRadius: '8px',
+                padding: '2px',
+                borderRadius: '50%',
                 margin: '0 auto 8px auto',
                 display: 'block',
               }}
             />
             <div style={{ fontSize: '13.5px', fontWeight: '700', color: '#D4AF37' }}>
-              كلية البوليتكنك | قسم تقنيات المختبرات الطبية
+              جامعة الفرات الأوسط التقنية | قسم تقنيات المختبرات الطبية
             </div>
             <div style={{ fontSize: '11px', color: '#9CA3AF' }}>
               {(student.studyPeriod || 'MORNING') === 'EVENING' ? 'الدراسة المسائية' : 'الدراسة الصباحية'} • بطاقة الحضور
