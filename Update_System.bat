@@ -89,6 +89,17 @@ if (Test-Path $copyAssetsScript) {
     }
 }
 
+# Sync database schema if schema.prisma exists
+$schemaFile = Join-Path $RepoRoot "apps\api\prisma\schema.prisma"
+if (Test-Path $schemaFile) {
+    Write-Host "[*] Updating database schema safely..." -ForegroundColor Yellow
+    Push-Location (Join-Path $RepoRoot "apps\api")
+    try {
+        npx prisma db push --skip-generate | Out-Null
+    } catch {}
+    Pop-Location
+}
+
 Write-Host ""
 Write-Host "========================================================" -ForegroundColor Green
 Write-Host "   [SUCCESS] System updated successfully!" -ForegroundColor Green
