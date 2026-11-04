@@ -168,7 +168,7 @@ export class LectureService {
     });
 
     if (!lecture) {
-      return null;
+      return { status: 'NONE', attendances: [] };
     }
 
     // Ensure QR rotation is active
