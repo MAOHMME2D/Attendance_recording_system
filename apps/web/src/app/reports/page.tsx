@@ -7,6 +7,7 @@ import * as XLSX from 'xlsx';
 import Navbar from '../../components/layout/Navbar';
 import ResetAbsencesModal from '../../components/modals/ResetAbsencesModal';
 import AttendancePdfReportModal from '../../components/modals/AttendancePdfReportModal';
+import { formatAttendanceDate, formatAttendanceTime } from '../../lib/formatTime';
 
 interface AttendanceRecord {
   id: string;
@@ -91,8 +92,6 @@ export default function ReportsPage() {
     const exportData = listToExport.map((lecture, index) => {
       const stats = getStats(lecture);
       const rate = stats.total > 0 ? Math.round((stats.present / stats.total) * 100) : 0;
-      const startDate = new Date(lecture.startedAt);
-      const closeDate = lecture.closedAt ? new Date(lecture.closedAt) : null;
 
       return {
         'ت': index + 1,
@@ -100,9 +99,9 @@ export default function ReportsPage() {
         'الدراسة': (lecture.studyPeriod || 'MORNING') === 'EVENING' ? 'مسائي' : 'صباحي',
         'الشعبة': lecture.section && lecture.section !== 'ALL' ? `شعبة ${lecture.section}` : 'الكل',
         'الحالة': lecture.status === 'ACTIVE' ? 'جارية' : 'منتهية',
-        'تاريخ البدء': startDate.toLocaleDateString('ar-IQ'),
-        'وقت البدء': startDate.toLocaleTimeString('ar-IQ', { hour: '2-digit', minute: '2-digit' }),
-        'وقت الانتهاء': closeDate ? closeDate.toLocaleTimeString('ar-IQ', { hour: '2-digit', minute: '2-digit' }) : '-',
+        'تاريخ البدء': formatAttendanceDate(lecture.startedAt),
+        'وقت البدء': formatAttendanceTime(lecture.startedAt, false),
+        'وقت الانتهاء': lecture.closedAt ? formatAttendanceTime(lecture.closedAt, false) : '-',
         'عدد الحضور': stats.present,
         'عدد الغياب': stats.absent,
         'إجمالي الطلاب': stats.total,
@@ -147,7 +146,7 @@ export default function ReportsPage() {
       'الباركود / ID': rec.studentCode || '-',
       'الحالة': rec.status === 'PRESENT' ? 'حاضر' : 'غائب',
       'وقت التسجيل': rec.status === 'PRESENT'
-        ? new Date(rec.registeredAt).toLocaleTimeString('ar-IQ', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+        ? formatAttendanceTime(rec.registeredAt, false)
         : '-',
     }));
 
@@ -168,7 +167,7 @@ export default function ReportsPage() {
   };
 
   return (
-    <div style={{ minHeight: '100vh' }}>
+    <div className="no-print" style={{ minHeight: '100vh' }}>
       {/* Unified Header / Navbar Component */}
       <Navbar />
 
@@ -381,17 +380,9 @@ export default function ReportsPage() {
                               شاشة الحضور المباشرة
                             </Link>
                           )}
-                          <span style={{ color: 'var(--text-muted)', fontSize: '13px' }}>
-                            {new Date(lecture.startedAt).toLocaleDateString('ar-IQ', {
-                              year: 'numeric',
-                              month: 'short',
-                              day: 'numeric',
-                            })}
-                            {' '}
-                            {new Date(lecture.startedAt).toLocaleTimeString('ar-IQ', {
-                              hour: '2-digit',
-                              minute: '2-digit',
-                            })}
+                          <span style={{ color: 'var(--text-muted)', fontSize: '13px', display: 'inline-flex', alignItems: 'center', gap: '8px' }}>
+                            <span>{formatAttendanceDate(lecture.startedAt)}</span>
+                            <bdi dir="ltr">{formatAttendanceTime(lecture.startedAt, false)}</bdi>
                           </span>
                         </div>
                       </div>
@@ -460,12 +451,7 @@ export default function ReportsPage() {
                       {selectedLecture.name}
                     </h2>
                     <p style={{ color: 'var(--text-muted)', fontSize: '13.5px', margin: 0 }}>
-                      {new Date(selectedLecture.startedAt).toLocaleDateString('ar-IQ', {
-                        weekday: 'long',
-                        year: 'numeric',
-                        month: 'long',
-                        day: 'numeric',
-                      })}
+                      {formatAttendanceDate(selectedLecture.startedAt, true)}
                     </p>
                   </div>
 
@@ -548,12 +534,9 @@ export default function ReportsPage() {
                               {record.status === 'PRESENT' ? 'حاضر' : 'غائب'}
                             </span>
                           </td>
-                          <td style={{ color: 'var(--text-muted)', fontSize: '13px', direction: 'ltr', textAlign: 'right' }}>
+                          <td style={{ color: 'var(--text-muted)', fontSize: '13px', textAlign: 'center' }}>
                             {record.status === 'PRESENT' ? (
-                              new Date(record.registeredAt).toLocaleTimeString('ar-IQ', {
-                                hour: '2-digit',
-                                minute: '2-digit',
-                              })
+                              <bdi dir="ltr">{formatAttendanceTime(record.registeredAt, false)}</bdi>
                             ) : '-'}
                           </td>
                         </tr>

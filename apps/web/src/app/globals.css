@@ -761,6 +761,22 @@ body {
     overflow: hidden !important;
   }
 
+  /* Print only the attendance sheet, not the lecture screen behind it */
+  body:has(.attendance-pdf-modal-root) > *:not(.attendance-pdf-modal-root) {
+    display: none !important;
+  }
+
+  .attendance-pdf-modal-root,
+  .attendance-pdf-preview {
+    position: static !important;
+    overflow: visible !important;
+    height: auto !important;
+    max-height: none !important;
+    background: #FFFFFF !important;
+    padding: 0 !important;
+    margin: 0 !important;
+  }
+
   /* Attendance PDF Printable Report */
   .attendance-pdf-modal-window {
     position: static !important;
@@ -809,6 +825,36 @@ body {
   #printable-attendance-report tr {
     page-break-inside: avoid !important;
     break-inside: avoid !important;
+  }
+
+  /* Same-page print: keep only the attendance sheet */
+  html.print-attendance-sheet body > * {
+    display: none !important;
+  }
+
+  html.print-attendance-sheet body > .attendance-pdf-modal-root {
+    display: block !important;
+    position: static !important;
+    background: #FFFFFF !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    height: auto !important;
+    max-height: none !important;
+    overflow: visible !important;
+  }
+
+  html.print-attendance-sheet .attendance-pdf-modal-root .no-print {
+    display: none !important;
+  }
+
+  html.print-attendance-sheet .attendance-pdf-preview,
+  html.print-attendance-sheet #printable-attendance-report {
+    display: block !important;
+    overflow: visible !important;
+    height: auto !important;
+    max-height: none !important;
+    background: #FFFFFF !important;
+    box-shadow: none !important;
   }
 }
 

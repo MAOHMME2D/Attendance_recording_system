@@ -1,6 +1,8 @@
 'use client';
 
 import React, { useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
+import { formatAttendanceDate, formatAttendanceTime } from '../../lib/formatTime';
 
 export interface AttendancePdfRecord {
   id?: string;
@@ -54,22 +56,23 @@ export default function AttendancePdfReportModal({
 
   const handlePrint = () => {
     const originalTitle = document.title;
-    const cleanTitle = reportTitle.replace(/[\s\/:*?"<>|]+/g, '_');
-    const dateStr = new Date().toISOString().slice(0, 10);
-    document.title = `${cleanTitle}_${dateStr}`;
-    window.print();
-    setTimeout(() => {
+    const cleanTitle = `${reportTitle.replace(/[\s/:*?"<>|]+/g, '_')}_${new Date().toISOString().slice(0, 10)}`;
+    document.title = cleanTitle;
+    document.documentElement.classList.add('print-attendance-sheet');
+
+    const cleanup = () => {
       document.title = originalTitle;
-    }, 1000);
+      document.documentElement.classList.remove('print-attendance-sheet');
+      window.removeEventListener('afterprint', cleanup);
+    };
+    window.addEventListener('afterprint', cleanup);
+    window.print();
   };
 
-  const currentDateFormatted = lectureDate
-    ? new Date(lectureDate).toLocaleDateString('ar-IQ', {
-        weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
-      })
-    : new Date().toLocaleDateString('ar-IQ', {
-        weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
-      });
+  const currentDateFormatted = formatAttendanceDate(
+    lectureDate || new Date().toISOString(),
+    true,
+  );
 
   // Calculate totals
   const totalStudents = records.length;
@@ -80,6 +83,11 @@ export default function AttendancePdfReportModal({
   const totalAbsent = isLectureSession
     ? records.filter(r => r.status === 'ABSENT').length
     : records.reduce((acc, r) => acc + (r.absentCount || 0), 0);
+  const sheetRecords = isLectureSession
+    ? [...records].sort((a, b) =>
+        String(a.studentCode || '').localeCompare(String(b.studentCode || ''), 'en', { numeric: true })
+      )
+    : records;
 
   // Colors
   const NAVY = '#1B2A4A';
@@ -88,9 +96,9 @@ export default function AttendancePdfReportModal({
   const GREEN_DARK = '#065F46';
   const RED_DARK = '#991B1B';
 
-  return (
+  const modal = (
     <div
-      className="modal-backdrop animate-fade-in"
+      className="modal-backdrop attendance-pdf-modal-root animate-fade-in"
       onClick={onClose}
       style={{
         position: 'fixed',
@@ -224,7 +232,7 @@ export default function AttendancePdfReportModal({
         </div>
 
         {/* Scrollable Preview Container on Screen */}
-        <div style={{ flex: 1, overflowY: 'auto', padding: '24px', background: '#F3F4F6' }}>
+        <div className="attendance-pdf-preview" style={{ flex: 1, overflowY: 'auto', padding: '24px', background: '#F3F4F6' }}>
           {/* Printable Report Document (A4 Styling) */}
           <div
             id="printable-attendance-report"
@@ -493,7 +501,7 @@ export default function AttendancePdfReportModal({
                 </tr>
               </thead>
               <tbody>
-                {records.length === 0 ? (
+                {sheetRecords.length === 0 ? (
                   <tr>
                     <td
                       colSpan={isLectureSession ? 6 : 7}
@@ -503,7 +511,7 @@ export default function AttendancePdfReportModal({
                     </td>
                   </tr>
                 ) : (
-                  records.map((r, idx) => {
+                  sheetRecords.map((r, idx) => {
                     const isAbsent = r.status === 'ABSENT' || (r.absentCount != null && r.absentCount > 0);
                     const rowBg = idx % 2 === 0 ? '#FFFFFF' : '#F8FAFC';
                     return (
@@ -536,9 +544,9 @@ export default function AttendancePdfReportModal({
                               {r.status === 'PRESENT' ? '✓ حاضر' : '✗ غائب'}
                             </td>
                             <td style={{ border: `1px solid ${NAVY}40`, textAlign: 'center', padding: '7px 6px', fontSize: '11px', color: '#4B5563' }}>
-                              {r.registeredAt
-                                ? new Date(r.registeredAt).toLocaleTimeString('ar-IQ', { hour: '2-digit', minute: '2-digit' })
-                                : '-'}
+                              <span dir="ltr" style={{ unicodeBidi: 'isolate', display: 'inline-block' }}>
+                                {formatAttendanceTime(r.registeredAt)}
+                              </span>
                             </td>
                           </>
                         ) : (
@@ -676,4 +684,7 @@ export default function AttendancePdfReportModal({
       </div>
     </div>
   );
+
+  if (typeof document === 'undefined') return modal;
+  return createPortal(modal, document.body);
 }

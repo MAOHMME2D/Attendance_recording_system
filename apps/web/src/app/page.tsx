@@ -9,6 +9,7 @@ import CameraScanner from '../components/camera/CameraScanner';
 import Navbar from '../components/layout/Navbar';
 import SectionManagerModal from '../components/modals/SectionManagerModal';
 import AttendancePdfReportModal from '../components/modals/AttendancePdfReportModal';
+import { formatAttendanceTime } from '../lib/formatTime';
 
 interface AttendanceRecord {
   id: string;
@@ -235,7 +236,7 @@ export default function HomePage() {
         'اسم الطالب': s.studentName,
         'الرقم التعريفي (الباركود)': s.studentCode || '-',
         'الحالة': 'حاضر',
-        'وقت التسجيل': new Date(s.registeredAt).toLocaleTimeString('ar-IQ', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+        'وقت التسجيل': formatAttendanceTime(s.registeredAt),
       })),
       ...(closedSummary.absentStudents || []).map((s, idx) => ({
         'ت': (closedSummary.presentStudents?.length || 0) + idx + 1,
@@ -364,7 +365,7 @@ export default function HomePage() {
   }, [lecture?.id]);
 
   return (
-    <div style={{ minHeight: '100vh', background: 'var(--bg-primary)' }}>
+    <div className="no-print" style={{ minHeight: '100vh', background: 'var(--bg-primary)' }}>
       {/* Unified Header / Navbar Component */}
       <Navbar />
 
@@ -958,12 +959,10 @@ export default function HomePage() {
                                 {record.status === 'PRESENT' ? 'حاضر' : 'غائب'}
                               </span>
                             </td>
-                            <td style={{ color: '#6B7280', fontSize: '12px', direction: 'ltr', textAlign: 'right' }}>
-                              {new Date(record.registeredAt).toLocaleTimeString('ar-IQ', {
-                                hour: '2-digit',
-                                minute: '2-digit',
-                                second: '2-digit',
-                              })}
+                            <td style={{ color: '#6B7280', fontSize: '12px', textAlign: 'center' }}>
+                              <span dir="ltr" style={{ unicodeBidi: 'isolate', display: 'inline-block' }}>
+                                {formatAttendanceTime(record.registeredAt)}
+                              </span>
                             </td>
                             <td style={{ textAlign: 'center' }}>
                               <button
@@ -1223,8 +1222,10 @@ export default function HomePage() {
                             <td style={{ textAlign: 'center', color: 'var(--text-muted)' }}>{idx + 1}</td>
                             <td style={{ fontWeight: '700', color: '#111827' }}>{s.studentName}</td>
                             <td style={{ fontFamily: 'monospace', color: '#4B5563' }}>{s.studentCode || '-'}</td>
-                            <td style={{ color: '#6B7280', fontSize: '12px', direction: 'ltr', textAlign: 'right' }}>
-                              {new Date(s.registeredAt).toLocaleTimeString('ar-IQ', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                            <td style={{ color: '#6B7280', fontSize: '12px', textAlign: 'center' }}>
+                              <span dir="ltr" style={{ unicodeBidi: 'isolate', display: 'inline-block' }}>
+                                {formatAttendanceTime(s.registeredAt)}
+                              </span>
                             </td>
                             <td style={{ textAlign: 'center' }}>
                               <span style={{ padding: '2px 8px', borderRadius: '6px', background: '#ECFDF5', color: '#065F46', fontSize: '11px', fontWeight: '700' }}>
@@ -1288,6 +1289,7 @@ export default function HomePage() {
               closedSummary.studyPeriod === 'EVENING' ? 'الدراسة المسائية' : 'الدراسة الصباحية'
             }
             sectionLabel={closedSummary.section ? `شعبة ${closedSummary.section}` : 'كافة الشُعب'}
+            lectureDate={lecture?.startedAt}
             records={[
               ...(closedSummary.presentStudents || []).map((s) => ({
                 id: s.studentId,
