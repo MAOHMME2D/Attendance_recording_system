@@ -46,7 +46,7 @@ module.exports = {
         },
       },
       fontFamily: {
-        sans: ['Inter', 'sans-serif'],
+        sans: ['Cairo', 'system-ui', 'sans-serif'],
         arabic: ['Cairo', 'sans-serif'],
       },
       animation: {

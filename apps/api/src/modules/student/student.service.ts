@@ -54,11 +54,17 @@ export class StudentService {
       const lecturePresent = student.attendances.filter(a => a.status === 'PRESENT').length;
       const lectureAbsent = student.attendances.filter(a => a.status === 'ABSENT').length;
 
-      const totalPresent = (student.presentCount || 0) + lecturePresent;
-      const totalAbsent = (student.absentCount || 0) + lectureAbsent;
-      const totalSessions = (student.totalSessions != null && student.totalSessions > 0)
-        ? student.totalSessions
-        : (totalPresent + totalAbsent);
+      // The counters stored on Student are recalculated from AttendanceRecord every time a
+      // lecture is closed (see LectureService.closeLecture), so they already include these
+      // records. Adding the records on top of them double-counts every lecture.
+      // Attendance records are the source of truth; the stored counters are only used as a
+      // baseline for students that have no records yet (e.g. imported from Excel).
+      const hasRecords = student.attendances.length > 0;
+      const totalPresent = hasRecords ? lecturePresent : (student.presentCount || 0);
+      const totalAbsent = hasRecords ? lectureAbsent : (student.absentCount || 0);
+      const totalSessions = hasRecords
+        ? totalPresent + totalAbsent
+        : Math.max(student.totalSessions || 0, totalPresent + totalAbsent);
 
       return {
         id: student.id,
