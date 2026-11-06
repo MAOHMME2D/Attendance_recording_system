@@ -1,73 +1,156 @@
+// RUNTIME DATABASE IS POSTGRESQL.
+// Migrations live in prisma/migrations/ (0001_init, 0002_online_foundation,
+// 0003_staff_management). The legacy SQLite schema for offline tooling is at
+// prisma/sqlite/schema.prisma. Keep both schemas in sync.
+// See docs/POSTGRES_MIGRATION.md.
 datasource db {
-  provider = "sqlite"
-  url      = "file:./attendance.db"
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
 }
 
 generator client {
   provider = "prisma-client-js"
 }
 
-// A single lecture session
 model Lecture {
-  id            String   @id @default(uuid())
-  name          String            // e.g. "Mathematics - Section A"
-  studyPeriod   String   @default("MORNING") // MORNING = صباحي, EVENING = مسائي
-  section       String?           // الشعبة المرتبطة بالمحاضرة
-  status        String   @default("ACTIVE")  // ACTIVE or CLOSED
-  qrToken       String   @unique  // current active QR token
-  qrExpiresAt   DateTime          // when the current QR token expires
-  startedAt     DateTime @default(now())
-  closedAt      DateTime?
-  createdAt     DateTime @default(now())
+  id                String   @id @default(uuid())
+  name              String
+  studyPeriod       String   @default("MORNING")
+  section           String?
+  status            String   @default("ACTIVE")
+  qrToken           String   @unique
+  qrExpiresAt       DateTime
+  createdByUserId   String?
+  conductedByUserId String?
+  startedAt         DateTime @default(now())
+  closedAt          DateTime?
+  createdAt         DateTime @default(now())
 
-  attendances   AttendanceRecord[]
+  attendances AttendanceRecord[]
+  createdBy   StaffUser?       @relation("LectureCreator", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  conductedBy StaffUser?       @relation("LectureConductor", fields: [conductedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([createdByUserId])
+  @@index([conductedByUserId])
 }
 
-// Pre-registered student in the college database
 model Student {
-  id           String             @id @default(uuid())
-  orderIndex   Int?               // الترتيب من عمود A في الإكسل
-  studentCode  String             @unique // الباركود / الرقم التعريفي الفريد ID (عمود G)
-  name         String             // اسم الطالب (عمود B)
-  studyPeriod  String             @default("MORNING") // MORNING = صباحي, EVENING = مسائي
-  section      String?            // الشعبة (عمود C)
-  presentCount Int                @default(0) // عدد مرات الحضور (عمود D)
-  absentCount  Int                @default(0) // عدد مرات الغياب (عمود E)
-  totalSessions Int?              // إجمالي المحاضرات (عمود F)
-  rate         Float?             // نسبة الحضور % (اختياري للتوافق القديم)
-  createdAt    DateTime           @default(now())
-  updatedAt    DateTime           @updatedAt
+  id            String   @id @default(uuid())
+  orderIndex    Int?
+  studentCode   String   @unique
+  name          String
+  studyPeriod   String   @default("MORNING")
+  section       String?
+  presentCount  Int      @default(0)
+  absentCount   Int      @default(0)
+  totalSessions Int?
+  rate          Float?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
 
-  attendances  AttendanceRecord[]
+  attendances AttendanceRecord[]
+  qrTokens    StudentQrToken[]
 }
 
-// A student attendance record
 model AttendanceRecord {
-  id           String    @id @default(uuid())
+  id           String   @id @default(uuid())
   lectureId    String
-  studentId    String?             // relation to Student (optional)
-  studentCode  String?             // student ID / code used to register
-  studentName  String              // student's name
-  status       String    @default("PRESENT")  // PRESENT, ABSENT
-  deviceId     String?             // unique hardware/browser device fingerprint
-  ipAddress    String?             // client IP address
-  registeredAt DateTime  @default(now())
-  createdAt    DateTime  @default(now())
+  studentId    String?
+  studentCode  String?
+  studentName  String
+  status       String   @default("PRESENT")
+  deviceId     String?
+  ipAddress    String?
+  registeredAt DateTime @default(now())
+  createdAt    DateTime @default(now())
 
-  lecture      Lecture   @relation(fields: [lectureId], references: [id])
-  student      Student?  @relation(fields: [studentId], references: [id], onDelete: SetNull)
+  lecture Lecture  @relation(fields: [lectureId], references: [id])
+  student Student? @relation(fields: [studentId], references: [id], onDelete: SetNull)
 
-  @@unique([lectureId, studentName])  // prevent duplicate student name in same lecture
+  @@unique([lectureId, studentName])
 }
 
-// Defined college section per study period
 model Section {
   id          String   @id @default(uuid())
-  studyPeriod String   @default("MORNING") // MORNING or EVENING
-  name        String   // "1", "2", "3", "A", etc.
-  label       String?  // "الشعبة الأولى", etc.
+  studyPeriod String   @default("MORNING")
+  name        String
+  label       String?
   createdAt   DateTime @default(now())
 
   @@unique([studyPeriod, name])
 }
 
+model StaffUser {
+  id               String    @id @default(uuid())
+  staffId          String    @unique
+  fullName         String
+  role             String
+  passwordHash     String
+  isActive         Boolean   @default(true)
+  failedLoginCount Int       @default(0)
+  lockedUntil      DateTime?
+  lastLoginAt      DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  sessions          StaffSession[]
+  auditLogs         AuditLog[]
+  createdLectures   Lecture[]       @relation("LectureCreator")
+  conductedLectures Lecture[]       @relation("LectureConductor")
+  createdQrTokens   StudentQrToken[]
+}
+
+model StaffSession {
+  id         String    @id @default(uuid())
+  userId     String
+  tokenHash  String    @unique
+  expiresAt  DateTime
+  revokedAt  DateTime?
+  ipAddress  String?
+  userAgent  String?
+  createdAt  DateTime  @default(now())
+  lastUsedAt DateTime?
+
+  user StaffUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model AuditLog {
+  id          String   @id @default(uuid())
+  actorUserId String?
+  action      String
+  entityType  String
+  entityId    String?
+  details     String?
+  ipAddress   String?
+  createdAt   DateTime @default(now())
+
+  actor StaffUser? @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@index([actorUserId])
+  @@index([createdAt])
+}
+
+model StudentQrToken {
+  id              String    @id @default(uuid())
+  studentId       String
+  token           String    @unique
+  revokedAt       DateTime?
+  createdByUserId String?
+  createdAt       DateTime  @default(now())
+
+  student   Student    @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  createdBy StaffUser? @relation(fields: [createdByUserId], references: [id], onDelete: SetNull)
+
+  @@index([studentId])
+  @@index([revokedAt])
+}
+
+model SystemSetting {
+  key       String   @id
+  value     String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}

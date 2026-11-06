@@ -5,6 +5,52 @@ function getApiBase(): string {
   return process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001/api';
 }
 
+/**
+ * WebSocket origin. The Next.js rewrite proxy only handles HTTP, so realtime
+ * connections go directly to the API origin. Cookies are host-scoped, so the
+ * HttpOnly session cookie is sent to this origin as well.
+ */
+export function getWsBase(): string {
+  const configured = process.env.NEXT_PUBLIC_WS_ORIGIN;
+  if (configured) return configured;
+  if (typeof window !== 'undefined') {
+    const port = process.env.NEXT_PUBLIC_API_PORT || '3001';
+    return `${window.location.protocol}//${window.location.hostname}:${port}`;
+  }
+  return 'http://localhost:3001';
+}
+
+/** Error carrying the HTTP status so pages can distinguish 401/403/etc. */
+export class ApiError extends Error {
+  status: number;
+  details?: unknown;
+
+  constructor(message: string, status: number, details?: unknown) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+    this.details = details;
+  }
+}
+
+function extractMessage(payload: any, status: number): string {
+  if (payload) {
+    const message = payload.message;
+    if (Array.isArray(message) && message.length > 0) {
+      return message.join('، ');
+    }
+    if (typeof message === 'string' && message.trim()) {
+      return message;
+    }
+    if (typeof payload.error === 'string' && payload.error.trim()) {
+      return payload.error;
+    }
+  }
+  if (status === 401) return 'يجب تسجيل الدخول للمتابعة';
+  if (status === 403) return 'ليست لديك صلاحية لتنفيذ هذا الإجراء';
+  return `فشل الطلب (${status})`;
+}
+
 async function apiFetch<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -17,14 +63,33 @@ async function apiFetch<T>(endpoint: string, options: RequestInit = {}): Promise
   const res = await fetch(`${base}${cleanEndpoint}`, {
     ...options,
     headers,
+    // Required so the HttpOnly staff session cookie is stored and sent.
+    credentials: 'include',
   });
 
-  if (!res.ok) {
-    const error = await res.json().catch(() => ({ message: 'An error occurred' }));
-    throw new Error(error.message || `Request failed with status ${res.status}`);
+  const text = await res.text();
+  let payload: any = null;
+  if (text) {
+    try {
+      payload = JSON.parse(text);
+    } catch {
+      payload = text;
+    }
   }
 
-  return res.json();
+  if (!res.ok) {
+    // Session expiry is broadcast so AuthProvider can clear its state once.
+    if (
+      res.status === 401 &&
+      typeof window !== 'undefined' &&
+      !cleanEndpoint.startsWith('/auth/login')
+    ) {
+      window.dispatchEvent(new Event('attendance:unauthorized'));
+    }
+    throw new ApiError(extractMessage(payload, res.status), res.status, payload);
+  }
+
+  return payload as T;
 }
 
 export type StudyPeriod = 'MORNING' | 'EVENING';
@@ -74,6 +139,87 @@ export function formatSectionLabel(section?: string | null): string {
   return clean;
 }
 
+// ============ Authentication ============
+export type StaffRole =
+  | 'HEAD_OF_DEPARTMENT'
+  | 'REGISTRAR'
+  | 'LECTURER'
+  | 'TECHNICAL_LECTURER'
+  | 'SYSTEM_OWNER';
+
+export interface StaffUser {
+  id: string;
+  staffId: string;
+  fullName: string;
+  role: StaffRole;
+  permissions: string[];
+  lastLoginAt: string | null;
+}
+
+export const authApi = {
+  login: (staffId: string, password: string) =>
+    apiFetch<{ expiresAt: string; user: StaffUser }>('/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ staffId, password }),
+    }),
+
+  logout: () => apiFetch<{ success: boolean }>('/auth/logout', { method: 'POST' }),
+
+  me: () => apiFetch<StaffUser>('/auth/me'),
+};
+
+// ============ Staff management ============
+export interface ManagedStaff {
+  id: string;
+  staffId: string;
+  fullName: string;
+  role: StaffRole;
+  isActive: boolean;
+  lastLoginAt: string | null;
+  createdAt: string;
+}
+
+export interface CreateStaffInput {
+  staffId: string;
+  fullName: string;
+  role: Exclude<StaffRole, 'SYSTEM_OWNER'>;
+  password: string;
+}
+
+export interface UpdateStaffInput {
+  staffId?: string;
+  fullName?: string;
+  role?: Exclude<StaffRole, 'SYSTEM_OWNER'>;
+}
+
+export const staffApi = {
+  list: () => apiFetch<ManagedStaff[]>('/staff'),
+
+  create: (input: CreateStaffInput) =>
+    apiFetch<ManagedStaff>('/staff', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+
+  update: (id: string, input: UpdateStaffInput) =>
+    apiFetch<ManagedStaff>(`/staff/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(input),
+    }),
+
+  setActive: (id: string, isActive: boolean) =>
+    apiFetch<ManagedStaff>(`/staff/${id}/status`, {
+      method: 'PATCH',
+      body: JSON.stringify({ isActive }),
+    }),
+
+  resetPassword: (id: string, password: string) =>
+    apiFetch<{ success: boolean }>(`/staff/${id}/password`, {
+      method: 'PATCH',
+      body: JSON.stringify({ password }),
+    }),
+};
+
 // ============ Lectures ============
 export const lectureApi = {
   create: (name: string, studyPeriod?: string, section?: string) =>
@@ -106,12 +252,6 @@ export const lectureApi = {
 
 // ============ Attendance ============
 export const attendanceApi = {
-  register: (token: string, studentName: string, deviceId?: string) =>
-    apiFetch<any>('/attendance/register', {
-      method: 'POST',
-      body: JSON.stringify({ token, studentName, deviceId }),
-    }),
-
   getByLecture: (lectureId: string) =>
     apiFetch<any[]>(`/attendance/${lectureId}`),
 
@@ -132,17 +272,72 @@ export const attendanceApi = {
 };
 
 // ============ Students ============
+export interface StudentHistoryItem {
+  attendanceId: string;
+  lectureId: string;
+  lectureName: string;
+  lectureDate: string;
+  status: string;
+  registeredAt: string;
+}
+
+/** Full student row returned by GET /students (Head of Department / Registrar). */
+export interface StudentListItem {
+  id: string;
+  orderIndex: number;
+  studentCode: string;
+  name: string;
+  studyPeriod?: string;
+  section?: string;
+  qrToken?: string | null;
+  presentCount: number;
+  absentCount: number;
+  totalLectures: number;
+  createdAt: string;
+  history: StudentHistoryItem[];
+}
+
+/** Minimal row returned by GET /students/options (lecturers, no QR/statistics). */
+export interface StudentOption {
+  id: string;
+  name: string;
+  studentCode: string;
+  studyPeriod?: string;
+  section?: string;
+  orderIndex?: number;
+}
+
 export const studentApi = {
   getAll: (studyPeriod?: string, section?: string) => {
     const params = new URLSearchParams();
     if (studyPeriod) params.append('studyPeriod', studyPeriod);
     if (section) params.append('section', section);
     const query = params.toString();
-    return apiFetch<any[]>(`/students${query ? `?${query}` : ''}`);
+    return apiFetch<StudentListItem[]>(`/students${query ? `?${query}` : ''}`);
+  },
+
+  /** Minimal list (no QR credentials) used by lecturers for manual attendance. */
+  getOptions: (studyPeriod?: string, section?: string) => {
+    const params = new URLSearchParams();
+    if (studyPeriod) params.append('studyPeriod', studyPeriod);
+    if (section) params.append('section', section);
+    const query = params.toString();
+    return apiFetch<StudentOption[]>(`/students/options${query ? `?${query}` : ''}`);
   },
 
   lookup: (code: string) =>
     apiFetch<any>(`/students/lookup/${encodeURIComponent(code)}`),
+
+  getQr: (studentId: string) =>
+    apiFetch<{ studentId: string; token: string }>(
+      `/students/${encodeURIComponent(studentId)}/qr`,
+    ),
+
+  rotateQr: (studentId: string) =>
+    apiFetch<{ studentId: string; token: string; rotatedAt: string }>(
+      `/students/${encodeURIComponent(studentId)}/qr/rotate`,
+      { method: 'POST' },
+    ),
 
   create: (data: { studentCode: string; name: string; studyPeriod?: string; section?: string; orderIndex?: number; presentCount?: number; absentCount?: number; totalSessions?: number; rate?: number }) =>
     apiFetch<any>('/students', {
@@ -203,4 +398,3 @@ export const sectionApi = {
       method: 'DELETE',
     }),
 };
-

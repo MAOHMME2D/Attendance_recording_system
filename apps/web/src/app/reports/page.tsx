@@ -8,6 +8,7 @@ import Navbar from '../../components/layout/Navbar';
 import ResetAbsencesModal from '../../components/modals/ResetAbsencesModal';
 import AttendancePdfReportModal from '../../components/modals/AttendancePdfReportModal';
 import { formatAttendanceDate, formatAttendanceTime } from '../../lib/formatTime';
+import { useAuth, PERMISSIONS } from '../../lib/auth';
 
 interface AttendanceRecord {
   id: string;
@@ -31,6 +32,10 @@ interface Lecture {
 }
 
 export default function ReportsPage() {
+  const { can } = useAuth();
+  const canDeleteLectures = can(PERMISSIONS.LECTURE_DELETE);
+  const canResetAbsences = can(PERMISSIONS.ABSENCES_RESET);
+
   const [lectures, setLectures] = useState<Lecture[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedLecture, setSelectedLecture] = useState<Lecture | null>(null);
@@ -198,7 +203,7 @@ export default function ReportsPage() {
               تقارير المحاضرات
             </h1>
           </div>
-          <p style={{ color: 'var(--text-secondary)', fontSize: '14px' }}>عرض المحاضرات السابقة وسجلات الحضور مع إمكانية التصدير إلى Excel</p>
+          <p style={{ color: 'var(--text-secondary)', fontSize: '14px' }}>عرض المحاضرات السابقة وسجلات الحضور مع إمكانية التصدير إلى PDF</p>
         </div>
 
         {/* Search & Global Actions */}
@@ -214,23 +219,25 @@ export default function ReportsPage() {
           />
 
           <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-            <button
-              className="btn btn-sm"
-              onClick={() => setShowResetModal(true)}
-              style={{
-                fontSize: '13px',
-                backgroundColor: '#FEF2F2',
-                color: '#DC2626',
-                border: '1px solid #FCA5A5',
-                fontWeight: '700',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '6px',
-                padding: '8px 14px',
-              }}
-            >
-              🔄 تصفير الغيابات
-            </button>
+            {canResetAbsences && (
+              <button
+                className="btn btn-sm"
+                onClick={() => setShowResetModal(true)}
+                style={{
+                  fontSize: '13px',
+                  backgroundColor: '#FEF2F2',
+                  color: '#DC2626',
+                  border: '1px solid #FCA5A5',
+                  fontWeight: '700',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  padding: '8px 14px',
+                }}
+              >
+                🔄 تصفير الغيابات
+              </button>
+            )}
 
             <button
               className="btn btn-sm"
@@ -404,21 +411,23 @@ export default function ReportsPage() {
                             <polyline points="10 9 9 9 8 9" />
                           </svg>
                         </button>
-                        <button
-                          className="btn btn-ghost btn-sm"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setDeleteConfirm({ id: lecture.id, name: lecture.name });
-                          }}
-                          style={{ padding: '4px 8px', fontSize: '12px', color: 'var(--danger)' }}
-                          title="حذف المحاضرة"
-                          id={`delete-${lecture.id}`}
-                        >
-                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#DC2626" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                            <polyline points="3 6 5 6 21 6" />
-                            <path d="m19 6-.867 12.142A2 2 0 0 1 16.138 20H7.862a2 2 0 0 1-1.995-1.858L5 6m5 0V4a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v2" />
-                          </svg>
-                        </button>
+                        {canDeleteLectures && (
+                          <button
+                            className="btn btn-ghost btn-sm"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setDeleteConfirm({ id: lecture.id, name: lecture.name });
+                            }}
+                            style={{ padding: '4px 8px', fontSize: '12px', color: 'var(--danger)' }}
+                            title="حذف المحاضرة"
+                            id={`delete-${lecture.id}`}
+                          >
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#DC2626" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                              <polyline points="3 6 5 6 21 6" />
+                              <path d="m19 6-.867 12.142A2 2 0 0 1 16.138 20H7.862a2 2 0 0 1-1.995-1.858L5 6m5 0V4a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v2" />
+                            </svg>
+                          </button>
+                        )}
                       </div>
                     </div>
 
@@ -629,14 +638,16 @@ export default function ReportsPage() {
       )}
 
       {/* Reset Absences Modal */}
-      <ResetAbsencesModal
-        isOpen={showResetModal}
-        onClose={() => setShowResetModal(false)}
-        onSuccess={(msg) => {
-          setSuccessBanner(msg);
-          loadLectures();
-        }}
-      />
+      {canResetAbsences && (
+        <ResetAbsencesModal
+          isOpen={showResetModal}
+          onClose={() => setShowResetModal(false)}
+          onSuccess={(msg) => {
+            setSuccessBanner(msg);
+            loadLectures();
+          }}
+        />
+      )}
 
       {/* Attendance & Absences PDF Report Modal */}
       {pdfLectureForReport && (

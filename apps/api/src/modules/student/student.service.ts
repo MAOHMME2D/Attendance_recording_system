@@ -6,13 +6,19 @@ import {
   Logger,
 } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
+import { AuditService } from '../audit/audit.service';
 import { normalizeSection } from '../../common/utils/section.util';
+import type { AuthenticatedUser } from '../../common/types/authenticated-user';
+import * as crypto from 'crypto';
 
 @Injectable()
 export class StudentService {
   private readonly logger = new Logger(StudentService.name);
 
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private audit: AuditService,
+  ) {}
 
   /**
    * Get all students with their attendance statistics and lecture details
@@ -30,6 +36,11 @@ export class StudentService {
     const students = await this.prisma.student.findMany({
       where: whereClause,
       include: {
+        qrTokens: {
+          where: { revokedAt: null },
+          orderBy: { createdAt: 'desc' },
+          take: 1,
+        },
         attendances: {
           include: {
             lecture: {
@@ -73,6 +84,7 @@ export class StudentService {
         name: student.name, // اسم الطالب (عمود B)
         studyPeriod: student.studyPeriod || 'MORNING', // صباحي / مسائي
         section: student.section || '', // الشعبة (عمود C)
+        qrToken: student.qrTokens[0]?.token || null,
         presentCount: totalPresent, // عدد الحضور (عمود D)
         absentCount: totalAbsent, // عدد مرات الغياب (عمود E)
         totalLectures: totalSessions, // إجمالي المحاضرات (عمود F)
@@ -109,6 +121,108 @@ export class StudentService {
   }
 
   /**
+   * Minimal student list for lecturers who need manual attendance options.
+   * Does not expose QR credentials or full attendance history.
+   */
+  async getOptions(studyPeriod?: string, section?: string) {
+    const where: any = {};
+    if (studyPeriod) where.studyPeriod = studyPeriod;
+    if (section && section !== 'ALL') where.section = normalizeSection(section);
+
+    const students = await this.prisma.student.findMany({
+      where,
+      select: {
+        id: true,
+        name: true,
+        studentCode: true,
+        studyPeriod: true,
+        section: true,
+        orderIndex: true,
+      },
+      orderBy: [{ orderIndex: 'asc' }, { studentCode: 'asc' }],
+    });
+
+    return students;
+  }
+
+  // ============================================================
+  // Opaque, revocable student QR credentials
+  // ============================================================
+
+  private generateQrToken(): string {
+    return `qr_${crypto.randomBytes(24).toString('base64url')}`;
+  }
+
+  /** Returns the active token, creating one if the student has none. */
+  async ensureQrToken(studentId: string, actorId?: string) {
+    const existing = await this.prisma.studentQrToken.findFirst({
+      where: { studentId, revokedAt: null },
+      orderBy: { createdAt: 'desc' },
+    });
+    if (existing) return existing;
+
+    return this.issueQrToken(studentId, actorId);
+  }
+
+  private async issueQrToken(studentId: string, actorId?: string) {
+    // Retry on the (very unlikely) unique collision.
+    for (let attempt = 0; attempt < 5; attempt++) {
+      try {
+        return await this.prisma.studentQrToken.create({
+          data: {
+            studentId,
+            token: this.generateQrToken(),
+            createdByUserId: actorId || null,
+          },
+        });
+      } catch (error: any) {
+        const isUnique =
+          error?.code === 'P2002' ||
+          String(error?.message || '').toLowerCase().includes('unique');
+        if (!isUnique || attempt === 4) throw error;
+      }
+    }
+    throw new BadRequestException('تعذر إصدار رمز QR للطالب');
+  }
+
+  /** Revokes the current token and returns a fresh one. */
+  async rotateQrToken(studentId: string, actor: AuthenticatedUser) {
+    const student = await this.prisma.student.findUnique({ where: { id: studentId } });
+    if (!student) {
+      throw new NotFoundException('الطالب غير موجود');
+    }
+
+    await this.prisma.studentQrToken.updateMany({
+      where: { studentId, revokedAt: null },
+      data: { revokedAt: new Date() },
+    });
+
+    const token = await this.issueQrToken(studentId, actor.id);
+
+    await this.audit.log({
+      actorUserId: actor.id,
+      action: 'STUDENT_QR_ROTATE',
+      entityType: 'Student',
+      entityId: studentId,
+      details: student.studentCode,
+    });
+
+    return token;
+  }
+
+  /** Ensures tokens exist for every student (used by the migration script). */
+  async backfillQrTokens(): Promise<number> {
+    const students = await this.prisma.student.findMany({
+      where: { qrTokens: { none: { revokedAt: null } } },
+      select: { id: true },
+    });
+    for (const student of students) {
+      await this.issueQrToken(student.id);
+    }
+    return students.length;
+  }
+
+  /**
    * Create a single student
    * Columns: A: orderIndex, B: name, C: section, D: presentCount, E: absentCount, F: totalSessions, G: studentCode (barcode)
    */
@@ -122,7 +236,7 @@ export class StudentService {
     absentCount?: number;
     totalSessions?: number;
     rate?: number;
-  }) {
+  }, actor?: AuthenticatedUser) {
     const cleanCode = data.studentCode.trim();
     const cleanName = data.name.trim();
 
@@ -158,6 +272,18 @@ export class StudentService {
     });
 
     this.logger.log(`Created student: #${student.orderIndex} [${student.studentCode}] ${student.name} (${student.studyPeriod} - ${student.section || '-'})`);
+
+    await this.ensureQrToken(student.id, actor?.id);
+    if (actor) {
+      await this.audit.log({
+        actorUserId: actor.id,
+        action: 'STUDENT_CREATE',
+        entityType: 'Student',
+        entityId: student.id,
+        details: student.studentCode,
+      });
+    }
+
     return student;
   }
 
@@ -174,7 +300,7 @@ export class StudentService {
     absentCount?: number;
     totalSessions?: number;
     rate?: number;
-  }[]) {
+  }[], actor?: AuthenticatedUser) {
     let created = 0;
     let updated = 0;
     let skipped = 0;
@@ -201,7 +327,7 @@ export class StudentService {
         });
 
         if (existing) {
-          await this.prisma.student.update({
+          const updatedStudent = await this.prisma.student.update({
             where: { id: existing.id },
             data: {
               orderIndex,
@@ -213,9 +339,10 @@ export class StudentService {
               totalSessions,
             },
           });
+          await this.ensureQrToken(updatedStudent.id, actor?.id);
           updated++;
         } else {
-          await this.prisma.student.create({
+          const createdStudent = await this.prisma.student.create({
             data: {
               orderIndex,
               studentCode: code,
@@ -227,6 +354,7 @@ export class StudentService {
               totalSessions,
             },
           });
+          await this.ensureQrToken(createdStudent.id, actor?.id);
           created++;
         }
       } catch (err: any) {
@@ -241,7 +369,7 @@ export class StudentService {
   /**
    * Update student details
    */
-  async update(id: string, data: { studentCode?: string; name?: string; studyPeriod?: string; section?: string }) {
+  async update(id: string, data: { studentCode?: string; name?: string; studyPeriod?: string; section?: string }, actor?: AuthenticatedUser) {
     const student = await this.prisma.student.findUnique({ where: { id } });
     if (!student) {
       throw new NotFoundException('الطالب غير موجود');
@@ -264,16 +392,28 @@ export class StudentService {
       }
     }
 
-    return this.prisma.student.update({
+    const updated = await this.prisma.student.update({
       where: { id },
       data: updateData,
     });
+
+    if (actor) {
+      await this.audit.log({
+        actorUserId: actor.id,
+        action: 'STUDENT_UPDATE',
+        entityType: 'Student',
+        entityId: id,
+        details: student.studentCode,
+      });
+    }
+
+    return updated;
   }
 
   /**
    * Delete a student
    */
-  async delete(id: string) {
+  async delete(id: string, actor?: AuthenticatedUser) {
     const student = await this.prisma.student.findUnique({ where: { id } });
     if (!student) {
       throw new NotFoundException('الطالب غير موجود');
@@ -281,6 +421,17 @@ export class StudentService {
 
     await this.prisma.student.delete({ where: { id } });
     this.logger.log(`Deleted student ${id} (${student.name})`);
+
+    if (actor) {
+      await this.audit.log({
+        actorUserId: actor.id,
+        action: 'STUDENT_DELETE',
+        entityType: 'Student',
+        entityId: id,
+        details: `${student.studentCode} - ${student.name}`,
+      });
+    }
+
     return { success: true };
   }
 
@@ -298,7 +449,7 @@ export class StudentService {
     section?: string;
     studentId?: string;
     resetType?: 'ABSENCES_ONLY' | 'ALL_ATTENDANCE';
-  }) {
+  }, actor?: AuthenticatedUser) {
     const { studyPeriod, section, studentId, resetType = 'ABSENCES_ONLY' } = params;
 
     const whereClause: any = {};
@@ -342,6 +493,16 @@ export class StudentService {
       });
 
       this.logger.log(`Full reset (attendance + absences) completed for ${students.length} students`);
+
+      if (actor) {
+        await this.audit.log({
+          actorUserId: actor.id,
+          action: 'ATTENDANCE_RESET_ALL',
+          entityType: 'Student',
+          details: `scope=${studyPeriod || 'ALL'}/${section || 'ALL'}, count=${students.length}`,
+        });
+      }
+
       return {
         success: true,
         count: students.length,
@@ -379,6 +540,16 @@ export class StudentService {
       }
 
       this.logger.log(`Absences reset completed for ${students.length} students`);
+
+      if (actor) {
+        await this.audit.log({
+          actorUserId: actor.id,
+          action: 'ATTENDANCE_RESET_ABSENCES',
+          entityType: 'Student',
+          details: `scope=${studyPeriod || 'ALL'}/${section || 'ALL'}, count=${students.length}`,
+        });
+      }
+
       return {
         success: true,
         count: students.length,

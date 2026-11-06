@@ -1,14 +1,17 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { lectureApi, attendanceApi, studentApi, sectionApi, SectionItem, MORNING_SECTIONS, EVENING_SECTIONS } from '../lib/api';
+import { lectureApi, attendanceApi, studentApi, sectionApi, SectionItem, MORNING_SECTIONS, EVENING_SECTIONS, getWsBase, ApiError } from '../lib/api';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { io, Socket } from 'socket.io-client';
 import * as XLSX from 'xlsx';
 import CameraScanner from '../components/camera/CameraScanner';
 import Navbar from '../components/layout/Navbar';
 import SectionManagerModal from '../components/modals/SectionManagerModal';
 import AttendancePdfReportModal from '../components/modals/AttendancePdfReportModal';
+import RequireAuth from '../components/auth/RequireAuth';
+import { useAuth, PERMISSIONS } from '../lib/auth';
 import { formatAttendanceTime } from '../lib/formatTime';
 
 interface AttendanceRecord {
@@ -27,7 +30,13 @@ interface StudentOption {
   section?: string;
 }
 
-export default function HomePage() {
+function HomeContent() {
+  const { can } = useAuth();
+  const router = useRouter();
+  const canManualAttendance = can(PERMISSIONS.ATTENDANCE_MANUAL);
+  const canManageSections = can(PERMISSIONS.SECTIONS_MANAGE);
+  const canLoadStudentOptions = can(PERMISSIONS.STUDENT_OPTIONS);
+
   // State for creating a new lecture
   const [lectureName, setLectureName] = useState('');
   const [lectureStudyPeriod, setLectureStudyPeriod] = useState<'MORNING' | 'EVENING'>('MORNING');
@@ -103,29 +112,45 @@ export default function HomePage() {
   // Socket ref
   const socketRef = useRef<Socket | null>(null);
 
-  // Fetch pre-registered students for autocomplete
+  // Fetch the minimal student list used by the manual-attendance autocomplete.
+  // Technical lecturers and roles without STUDENT_OPTIONS never receive it.
   useEffect(() => {
-    studentApi.getAll().then((data) => {
+    if (!canLoadStudentOptions) {
+      setAllStudents([]);
+      return;
+    }
+    studentApi.getOptions().then((data) => {
       setAllStudents(data || []);
-    }).catch(() => {});
-  }, [lecture?.id]);
+    }).catch((err) => {
+      if (!(err instanceof ApiError) || (err.status !== 401 && err.status !== 403)) {
+        console.error('Failed to load student options:', err);
+      }
+    });
+  }, [canLoadStudentOptions, lecture?.id]);
 
-  // Connect to Socket.IO for real-time updates
+  // Connect to Socket.IO for real-time updates. The socket authenticates with
+  // the HttpOnly session cookie; anonymous sockets are rejected server-side.
   const connectSocket = useCallback((lectureId: string) => {
     if (socketRef.current) {
       socketRef.current.disconnect();
     }
 
-    const wsHost = typeof window !== 'undefined'
-      ? `${window.location.protocol}//${window.location.hostname}:3001`
-      : 'http://localhost:3001';
-
-    const socket = io(`${wsHost}/attendance`, {
+    const socket = io(`${getWsBase()}/attendance`, {
       transports: ['websocket', 'polling'],
+      withCredentials: true,
     });
 
     socket.on('connect', () => {
       socket.emit('lecture:join', { lectureId });
+    });
+
+    socket.on('auth:error', () => {
+      socket.disconnect();
+      router.replace('/login');
+    });
+
+    socket.on('lecture:join:denied', (payload: { message?: string }) => {
+      console.warn('Lecture room join denied:', payload?.message);
     });
 
     socket.on('attendance:new', (data: AttendanceRecord) => {
@@ -145,7 +170,7 @@ export default function HomePage() {
     });
 
     socketRef.current = socket;
-  }, []);
+  }, [router]);
 
   // Restore active lecture on load
   useEffect(() => {
@@ -466,26 +491,28 @@ export default function HomePage() {
                     الشُعب المستهدفة (يمكنك اختيار أكثر من شعبة):
                   </label>
                   <div style={{ display: 'flex', gap: '6px' }}>
-                    <button
-                      type="button"
-                      onClick={() => setShowSectionModal(true)}
-                      title="إضافة أو حذف شُعب"
-                      style={{
-                        background: '#EEF2FF',
-                        color: '#4F46E5',
-                        border: '1px solid #C7D2FE',
-                        borderRadius: '6px',
-                        padding: '3px 10px',
-                        fontSize: '11px',
-                        fontWeight: '700',
-                        cursor: 'pointer',
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '4px',
-                      }}
-                    >
-                      ⚙️ إدارة الشُعب
-                    </button>
+                    {canManageSections && (
+                      <button
+                        type="button"
+                        onClick={() => setShowSectionModal(true)}
+                        title="إضافة أو حذف شُعب"
+                        style={{
+                          background: '#EEF2FF',
+                          color: '#4F46E5',
+                          border: '1px solid #C7D2FE',
+                          borderRadius: '6px',
+                          padding: '3px 10px',
+                          fontSize: '11px',
+                          fontWeight: '700',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '4px',
+                        }}
+                      >
+                        ⚙️ إدارة الشُعب
+                      </button>
+                    )}
                     <button
                       type="button"
                       onClick={() => setSelectedSections([])}
@@ -744,7 +771,8 @@ export default function HomePage() {
                   </div>
                 </div>
 
-                {/* Searchable Manual Add Section */}
+                {/* Searchable Manual Add Section (requires ATTENDANCE_MANUAL) */}
+                {canManualAttendance && (
                 <div style={{ position: 'relative', marginBottom: '18px' }}>
                   <div style={{ fontSize: '12px', fontWeight: '700', color: '#374151', marginBottom: '6px' }}>
                     إضافة حضور يدوي (ابحث بالاسم أو الباركود):
@@ -914,6 +942,7 @@ export default function HomePage() {
                     </div>
                   )}
                 </div>
+                )}
 
                 {/* Attendance Table */}
                 {attendances.length === 0 ? (
@@ -932,7 +961,9 @@ export default function HomePage() {
                           <th>الباركود</th>
                           <th style={{ textAlign: 'center' }}>الحالة</th>
                           <th>وقت التسجيل</th>
-                          <th style={{ textAlign: 'center', width: '70px' }}>تعديل</th>
+                          {canManualAttendance && (
+                            <th style={{ textAlign: 'center', width: '70px' }}>تعديل</th>
+                          )}
                         </tr>
                       </thead>
                       <tbody>
@@ -964,15 +995,17 @@ export default function HomePage() {
                                 {formatAttendanceTime(record.registeredAt)}
                               </span>
                             </td>
-                            <td style={{ textAlign: 'center' }}>
-                              <button
-                                className="btn btn-ghost btn-sm"
-                                onClick={() => handleToggle(record.id)}
-                                style={{ padding: '3px 8px', fontSize: '11px' }}
-                              >
-                                تبديل
-                              </button>
-                            </td>
+                            {canManualAttendance && (
+                              <td style={{ textAlign: 'center' }}>
+                                <button
+                                  className="btn btn-ghost btn-sm"
+                                  onClick={() => handleToggle(record.id)}
+                                  style={{ padding: '3px 8px', fontSize: '11px' }}
+                                >
+                                  تبديل
+                                </button>
+                              </td>
+                            )}
                           </tr>
                         ))}
                       </tbody>
@@ -1313,5 +1346,17 @@ export default function HomePage() {
         )}
       </div>
     </div>
+  );
+}
+
+/**
+ * Phase 1: the attendance workspace is available only to authenticated staff
+ * who hold LECTURE_CONDUCT (all four roles do; students have no accounts).
+ */
+export default function HomePage() {
+  return (
+    <RequireAuth permission={PERMISSIONS.LECTURE_CONDUCT}>
+      <HomeContent />
+    </RequireAuth>
   );
 }

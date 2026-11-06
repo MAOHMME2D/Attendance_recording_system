@@ -2,11 +2,15 @@ import {
   Injectable,
   NotFoundException,
   BadRequestException,
+  ForbiddenException,
   Logger,
 } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { AttendanceGateway } from './attendance.gateway';
+import { AuthorizationService } from '../auth/authorization.service';
+import { AuditService } from '../audit/audit.service';
 import { normalizeSection } from '../../common/utils/section.util';
+import type { AuthenticatedUser } from '../../common/types/authenticated-user';
 import * as crypto from 'crypto';
 import * as os from 'os';
 
@@ -68,6 +72,8 @@ export class LectureService {
   constructor(
     private prisma: PrismaService,
     private gateway: AttendanceGateway,
+    private authorization: AuthorizationService,
+    private audit: AuditService,
   ) {}
 
   /**
@@ -80,18 +86,39 @@ export class LectureService {
   /**
    * Create a new lecture and start QR token rotation
    */
-  async createLecture(name: string, studyPeriod?: string, section?: string) {
+  async createLecture(
+    name: string,
+    studyPeriod: string | undefined,
+    section: string | undefined,
+    actor: AuthenticatedUser,
+  ) {
+    const cleanName = String(name || '').trim();
+    if (!cleanName) {
+      throw new BadRequestException('اسم المحاضرة مطلوب');
+    }
+
     const token = this.generateToken();
     const expiresAt = new Date(Date.now() + 25 * 1000);
 
     const lecture = await this.prisma.lecture.create({
       data: {
-        name,
-        studyPeriod: studyPeriod || 'MORNING',
+        name: cleanName,
+        studyPeriod: studyPeriod === 'EVENING' ? 'EVENING' : 'MORNING',
         section: section ? section.trim() : null,
         qrToken: token,
         qrExpiresAt: expiresAt,
+        // The staff member starting the session is the recorded conductor.
+        createdByUserId: actor.id,
+        conductedByUserId: actor.id,
       },
+    });
+
+    await this.audit.log({
+      actorUserId: actor.id,
+      action: 'LECTURE_CREATE',
+      entityType: 'Lecture',
+      entityId: lecture.id,
+      details: `${cleanName} (${lecture.studyPeriod}${lecture.section ? ` / ${lecture.section}` : ''})`,
     });
 
     // Store token in active cache (valid for 3 minutes for scanned students)
@@ -122,9 +149,9 @@ export class LectureService {
   }
 
   /**
-   * Get a lecture by ID
+   * Get a lecture by ID (only if the actor may access it)
    */
-  async getLecture(id: string) {
+  async getLecture(id: string, actor: AuthenticatedUser) {
     const lecture = await this.prisma.lecture.findUnique({
       where: { id },
       include: {
@@ -136,6 +163,10 @@ export class LectureService {
 
     if (!lecture) {
       throw new NotFoundException('Lecture not found');
+    }
+
+    if (!this.authorization.canAccessLecture(actor, lecture)) {
+      throw new ForbiddenException('لا تملك صلاحية الوصول إلى هذه المحاضرة');
     }
 
     const localIP = getLocalIP();
@@ -154,11 +185,14 @@ export class LectureService {
   }
 
   /**
-   * Get currently active lecture (if any)
+   * Get the active lecture visible to the actor (if any)
    */
-  async getActiveLecture() {
+  async getActiveLecture(actor: AuthenticatedUser) {
     const lecture = await this.prisma.lecture.findFirst({
-      where: { status: 'ACTIVE' },
+      where: {
+        status: 'ACTIVE',
+        ...this.authorization.lectureScope(actor),
+      },
       orderBy: { startedAt: 'desc' },
       include: {
         attendances: {
@@ -194,13 +228,17 @@ export class LectureService {
   /**
    * Close a lecture and calculate present vs absent from student database
    */
-  async closeLecture(id: string) {
+  async closeLecture(id: string, actor: AuthenticatedUser, ipAddress?: string) {
     const lecture = await this.prisma.lecture.findUnique({
       where: { id },
     });
 
     if (!lecture) {
       throw new NotFoundException('Lecture not found');
+    }
+
+    if (!this.authorization.canAccessLecture(actor, lecture)) {
+      throw new ForbiddenException('لا تملك صلاحية إنهاء هذه المحاضرة');
     }
 
     if (lecture.status !== 'ACTIVE') {
@@ -331,16 +369,26 @@ export class LectureService {
     // Emit lecture closed event
     this.gateway.emitLectureClosed(id, summary);
 
+    await this.audit.log({
+      actorUserId: actor.id,
+      action: 'LECTURE_CLOSE',
+      entityType: 'Lecture',
+      entityId: id,
+      details: `present=${presentStudents.length}, absent=${absentStudents.length}`,
+      ipAddress,
+    });
+
     this.logger.log(`Lecture closed: ${id} - Present: ${presentStudents.length}, Absent: ${absentStudents.length}`);
 
     return summary;
   }
 
   /**
-   * Get all lectures (for reports page)
+   * Get all lectures the actor is allowed to see (for reports)
    */
-  async getAllLectures() {
+  async getAllLectures(actor: AuthenticatedUser) {
     return this.prisma.lecture.findMany({
+      where: this.authorization.lectureScope(actor),
       include: {
         _count: {
           select: { attendances: true },
@@ -354,9 +402,36 @@ export class LectureService {
   }
 
   /**
-   * Validate a QR token - returns the lectureId if valid
+   * Fetch a lecture and fail unless the actor may access it.
+   * Used by attendance operations and the WebSocket gateway.
    */
-  async validateQrToken(token: string): Promise<{
+  async assertCanAccessLecture(
+    actor: Pick<AuthenticatedUser, 'id' | 'role'>,
+    lectureId: string,
+  ) {
+    const lecture = await this.prisma.lecture.findUnique({ where: { id: lectureId } });
+    if (!lecture) {
+      throw new NotFoundException('المحاضرة غير موجودة');
+    }
+    if (!this.authorization.canAccessLecture(actor, lecture)) {
+      throw new ForbiddenException('لا تملك صلاحية الوصول إلى هذه المحاضرة');
+    }
+    return lecture;
+  }
+
+  async canAccessLecture(
+    actor: Pick<AuthenticatedUser, 'id' | 'role'>,
+    lectureId: string,
+  ): Promise<boolean> {
+    const lecture = await this.prisma.lecture.findUnique({ where: { id: lectureId } });
+    if (!lecture) return false;
+    return this.authorization.canAccessLecture(actor, lecture);
+  }
+
+  /**
+   * Validate a QR token and confirm the actor may access its lecture.
+   */
+  async validateQrToken(token: string, actor?: AuthenticatedUser): Promise<{
     valid: boolean;
     lectureId?: string;
     lectureName?: string;
@@ -392,6 +467,10 @@ export class LectureService {
 
     if (lecture.status !== 'ACTIVE') {
       return { valid: false, reason: 'تم إنهاء هذه المحاضرة' };
+    }
+
+    if (actor && !this.authorization.canAccessLecture(actor, lecture)) {
+      return { valid: false, reason: 'لا تملك صلاحية الوصول إلى هذه المحاضرة' };
     }
 
     return { valid: true, lectureId: lecture.id, lectureName: lectureName || lecture.name };
@@ -475,10 +554,14 @@ export class LectureService {
   /**
    * Delete a lecture and all its attendance records
    */
-  async deleteLecture(id: string) {
+  async deleteLecture(id: string, actor: AuthenticatedUser, ipAddress?: string) {
     const lecture = await this.prisma.lecture.findUnique({ where: { id } });
     if (!lecture) {
       throw new NotFoundException('Lecture not found');
+    }
+
+    if (!this.authorization.canAccessLecture(actor, lecture)) {
+      throw new ForbiddenException('لا تملك صلاحية حذف هذه المحاضرة');
     }
 
     // Stop rotation if active
@@ -494,6 +577,15 @@ export class LectureService {
     // Delete attendance records first, then the lecture
     await this.prisma.attendanceRecord.deleteMany({ where: { lectureId: id } });
     await this.prisma.lecture.delete({ where: { id } });
+
+    await this.audit.log({
+      actorUserId: actor.id,
+      action: 'LECTURE_DELETE',
+      entityType: 'Lecture',
+      entityId: id,
+      details: lecture.name,
+      ipAddress,
+    });
 
     this.logger.log(`Lecture deleted: ${id}`);
     return { success: true };

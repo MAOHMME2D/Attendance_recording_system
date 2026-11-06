@@ -7,6 +7,7 @@ interface StudentData {
   id: string;
   name: string;
   studentCode: string;
+  qrToken?: string | null;
   studyPeriod?: string | null;
   orderIndex?: number | null;
   section?: string | null;
@@ -189,7 +190,7 @@ export default function BulkStudentCardsModal({ students, onClose }: BulkStudent
                   {/* QR Code Box - BIGGER SIZE */}
                   <div style={{ padding: '4px', background: '#FFFFFF', borderRadius: '8px', border: '1.5px solid #D1D5DB', display: 'inline-block', margin: '3px 0' }}>
                     <QRCodeSVG
-                      value={student.studentCode}
+                      value={student.qrToken || student.studentCode}
                       size={130}
                       level="M"
                       marginSize={1}

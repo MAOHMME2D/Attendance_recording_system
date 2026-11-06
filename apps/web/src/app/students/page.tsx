@@ -10,6 +10,7 @@ import Navbar from '../../components/layout/Navbar';
 import SectionManagerModal from '../../components/modals/SectionManagerModal';
 import ResetAbsencesModal from '../../components/modals/ResetAbsencesModal';
 import AttendancePdfReportModal from '../../components/modals/AttendancePdfReportModal';
+import { useAuth, PERMISSIONS } from '../../lib/auth';
 
 interface AttendanceHistoryItem {
   attendanceId: string;
@@ -25,6 +26,7 @@ interface StudentWithStats {
   orderIndex: number;
   studentCode: string;
   name: string;
+  qrToken?: string | null;
   studyPeriod?: string;
   section?: string;
   presentCount: number;
@@ -46,6 +48,12 @@ interface ParsedImportStudent {
 }
 
 export default function StudentsPage() {
+  const { can } = useAuth();
+  const canManageStudents = can(PERMISSIONS.STUDENTS_MANAGE);
+  const canManageSections = can(PERMISSIONS.SECTIONS_MANAGE);
+  const canResetAbsences = can(PERMISSIONS.ABSENCES_RESET);
+  const canIssueQr = can(PERMISSIONS.QR_ISSUE);
+
   const [students, setStudents] = useState<StudentWithStats[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
@@ -543,44 +551,52 @@ export default function StudentsPage() {
           </div>
 
           <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-            <button
-              className="btn btn-sm"
-              onClick={() => setShowResetModal(true)}
-              style={{
-                fontSize: '12px',
-                backgroundColor: '#FEF2F2',
-                color: '#DC2626',
-                border: '1px solid #FCA5A5',
-                fontWeight: '700',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '4px',
-              }}
-            >
-              🔄 تصفير الغيابات
-            </button>
-            <button
-              className="btn btn-primary btn-sm"
-              onClick={() => setShowBulkPrintModal(true)}
-              disabled={filteredStudents.length === 0}
-              style={{ fontSize: '12px' }}
-            >
-              طباعة بطاقات الطلاب ({filteredStudents.length})
-            </button>
-            <button
-              className="btn btn-primary btn-sm"
-              onClick={() => { setShowAddModal(true); setAddError(''); }}
-              style={{ fontSize: '12px' }}
-            >
-              إضافة طالب
-            </button>
-            <button
-              className="btn btn-ghost btn-sm"
-              onClick={() => { setShowImportModal(true); setImportResult(null); }}
-              style={{ fontSize: '12px' }}
-            >
-              استيراد طلاب
-            </button>
+            {canResetAbsences && (
+              <button
+                className="btn btn-sm"
+                onClick={() => setShowResetModal(true)}
+                style={{
+                  fontSize: '12px',
+                  backgroundColor: '#FEF2F2',
+                  color: '#DC2626',
+                  border: '1px solid #FCA5A5',
+                  fontWeight: '700',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '4px',
+                }}
+              >
+                🔄 تصفير الغيابات
+              </button>
+            )}
+            {canIssueQr && (
+              <button
+                className="btn btn-primary btn-sm"
+                onClick={() => setShowBulkPrintModal(true)}
+                disabled={filteredStudents.length === 0}
+                style={{ fontSize: '12px' }}
+              >
+                طباعة بطاقات الطلاب ({filteredStudents.length})
+              </button>
+            )}
+            {canManageStudents && (
+              <>
+                <button
+                  className="btn btn-primary btn-sm"
+                  onClick={() => { setShowAddModal(true); setAddError(''); }}
+                  style={{ fontSize: '12px' }}
+                >
+                  إضافة طالب
+                </button>
+                <button
+                  className="btn btn-ghost btn-sm"
+                  onClick={() => { setShowImportModal(true); setImportResult(null); }}
+                  style={{ fontSize: '12px' }}
+                >
+                  استيراد طلاب
+                </button>
+              </>
+            )}
             <button
               className="btn btn-sm"
               onClick={() => setShowPdfReportModal(true)}
@@ -706,23 +722,25 @@ export default function StudentsPage() {
                   {sec.label} ({sec.value})
                 </button>
               ))}
-              <button
-                type="button"
-                onClick={() => setShowSectionModal(true)}
-                style={{
-                  padding: '5px 12px',
-                  borderRadius: '20px',
-                  fontSize: '12px',
-                  fontWeight: '700',
-                  border: '1px dashed #3B82F6',
-                  background: '#EFF6FF',
-                  color: '#1D4ED8',
-                  cursor: 'pointer',
-                  marginRight: 'auto',
-                }}
-              >
-                ⚙️ إدارة الشُعب
-              </button>
+              {canManageSections && (
+                <button
+                  type="button"
+                  onClick={() => setShowSectionModal(true)}
+                  style={{
+                    padding: '5px 12px',
+                    borderRadius: '20px',
+                    fontSize: '12px',
+                    fontWeight: '700',
+                    border: '1px dashed #3B82F6',
+                    background: '#EFF6FF',
+                    color: '#1D4ED8',
+                    cursor: 'pointer',
+                    marginRight: 'auto',
+                  }}
+                >
+                  ⚙️ إدارة الشُعب
+                </button>
+              )}
             </div>
           )}
 
@@ -764,23 +782,25 @@ export default function StudentsPage() {
                   {sec.label} ({sec.value})
                 </button>
               ))}
-              <button
-                type="button"
-                onClick={() => setShowSectionModal(true)}
-                style={{
-                  padding: '5px 12px',
-                  borderRadius: '20px',
-                  fontSize: '12px',
-                  fontWeight: '700',
-                  border: '1px dashed #8B5CF6',
-                  background: '#F5F3FF',
-                  color: '#6D28D9',
-                  cursor: 'pointer',
-                  marginRight: 'auto',
-                }}
-              >
-                ⚙️ إدارة الشُعب
-              </button>
+              {canManageSections && (
+                <button
+                  type="button"
+                  onClick={() => setShowSectionModal(true)}
+                  style={{
+                    padding: '5px 12px',
+                    borderRadius: '20px',
+                    fontSize: '12px',
+                    fontWeight: '700',
+                    border: '1px dashed #8B5CF6',
+                    background: '#F5F3FF',
+                    color: '#6D28D9',
+                    cursor: 'pointer',
+                    marginRight: 'auto',
+                  }}
+                >
+                  ⚙️ إدارة الشُعب
+                </button>
+              )}
             </div>
           )}
         </div>
@@ -854,8 +874,12 @@ export default function StudentsPage() {
               قم بإضافة طلاب فردياً أو استيرادهم من ملف إكسل
             </p>
             <div style={{ display: 'flex', gap: '10px', marginTop: '16px', justifyContent: 'center' }}>
-              <button className="btn btn-primary" onClick={() => setShowAddModal(true)}>إضافة طالب جديد</button>
-              <button className="btn btn-ghost" onClick={() => setShowImportModal(true)}>استيراد ملف إكسل</button>
+              {canManageStudents && (
+                <>
+                  <button className="btn btn-primary" onClick={() => setShowAddModal(true)}>إضافة طالب جديد</button>
+                  <button className="btn btn-ghost" onClick={() => setShowImportModal(true)}>استيراد ملف إكسل</button>
+                </>
+              )}
             </div>
           </div>
         ) : (
@@ -871,9 +895,9 @@ export default function StudentsPage() {
                   <th style={{ textAlign: 'center' }}>الغياب</th>
                   <th style={{ textAlign: 'center' }}>الإجمالي</th>
                   <th>الباركود</th>
-                  <th style={{ textAlign: 'center' }}>بطاقة QR</th>
+                  {canIssueQr && <th style={{ textAlign: 'center' }}>بطاقة QR</th>}
                   <th style={{ textAlign: 'center' }}>التفاصيل</th>
-                  <th style={{ textAlign: 'center', width: '60px' }}>حذف</th>
+                  {canManageStudents && <th style={{ textAlign: 'center', width: '60px' }}>حذف</th>}
                 </tr>
               </thead>
               <tbody>
@@ -917,15 +941,17 @@ export default function StudentsPage() {
                         {student.studentCode}
                       </span>
                     </td>
-                    <td style={{ textAlign: 'center' }}>
-                      <button
-                        className="btn btn-ghost btn-sm"
-                        style={{ fontSize: '11px', padding: '3px 8px', fontWeight: '700' }}
-                        onClick={() => setSelectedStudentForCard(student)}
-                      >
-                        بطاقة QR
-                      </button>
-                    </td>
+                    {canIssueQr && (
+                      <td style={{ textAlign: 'center' }}>
+                        <button
+                          className="btn btn-ghost btn-sm"
+                          style={{ fontSize: '11px', padding: '3px 8px', fontWeight: '700' }}
+                          onClick={() => setSelectedStudentForCard(student)}
+                        >
+                          بطاقة QR
+                        </button>
+                      </td>
+                    )}
                     <td style={{ textAlign: 'center' }}>
                       <button
                         className="btn btn-ghost btn-sm"
@@ -935,15 +961,17 @@ export default function StudentsPage() {
                         عرض السجل
                       </button>
                     </td>
-                    <td style={{ textAlign: 'center' }}>
-                      <button
-                        className="btn btn-ghost btn-sm"
-                        style={{ color: '#DC2626', padding: '3px 6px', fontSize: '11px' }}
-                        onClick={() => setDeleteTarget(student)}
-                      >
-                        حذف
-                      </button>
-                    </td>
+                    {canManageStudents && (
+                      <td style={{ textAlign: 'center' }}>
+                        <button
+                          className="btn btn-ghost btn-sm"
+                          style={{ color: '#DC2626', padding: '3px 6px', fontSize: '11px' }}
+                          onClick={() => setDeleteTarget(student)}
+                        >
+                          حذف
+                        </button>
+                      </td>
+                    )}
                   </tr>
                 ))}
               </tbody>
@@ -1221,6 +1249,14 @@ export default function StudentsPage() {
       <StudentQrCardModal
         student={selectedStudentForCard}
         onClose={() => setSelectedStudentForCard(null)}
+        onRotated={(studentId, token) => {
+          setStudents((prev) =>
+            prev.map((item) => (item.id === studentId ? { ...item, qrToken: token } : item)),
+          );
+          setSelectedStudentForCard((prev) =>
+            prev && prev.id === studentId ? { ...prev, qrToken: token } : prev,
+          );
+        }}
       />
 
       {/* Bulk Student Cards Print Modal */}
@@ -1232,27 +1268,31 @@ export default function StudentsPage() {
       )}
 
       {/* Section Management Modal */}
-      <SectionManagerModal
-        isOpen={showSectionModal}
-        onClose={() => setShowSectionModal(false)}
-        onSectionsChanged={() => {
-          loadSections();
-          loadStudents();
-        }}
-        initialPeriod={selectedStudyPeriod === 'EVENING' ? 'EVENING' : 'MORNING'}
-      />
+      {canManageSections && (
+        <SectionManagerModal
+          isOpen={showSectionModal}
+          onClose={() => setShowSectionModal(false)}
+          onSectionsChanged={() => {
+            loadSections();
+            loadStudents();
+          }}
+          initialPeriod={selectedStudyPeriod === 'EVENING' ? 'EVENING' : 'MORNING'}
+        />
+      )}
 
       {/* Reset Absences Modal */}
-      <ResetAbsencesModal
-        isOpen={showResetModal}
-        onClose={() => setShowResetModal(false)}
-        onSuccess={(msg) => {
-          setSuccessBanner(msg);
-          loadStudents();
-        }}
-        currentStudyPeriod={selectedStudyPeriod !== 'ALL' ? selectedStudyPeriod : undefined}
-        currentSection={selectedSection !== 'ALL' ? selectedSection : undefined}
-      />
+      {canResetAbsences && (
+        <ResetAbsencesModal
+          isOpen={showResetModal}
+          onClose={() => setShowResetModal(false)}
+          onSuccess={(msg) => {
+            setSuccessBanner(msg);
+            loadStudents();
+          }}
+          currentStudyPeriod={selectedStudyPeriod !== 'ALL' ? selectedStudyPeriod : undefined}
+          currentSection={selectedSection !== 'ALL' ? selectedSection : undefined}
+        />
+      )}
 
       {/* Attendance & Absences PDF Report Modal */}
       <AttendancePdfReportModal

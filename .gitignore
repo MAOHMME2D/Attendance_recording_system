@@ -1,6 +1,9 @@
 # Developer Tools
 Create_Update_Package.bat
 
+# Bundled portable PostgreSQL (binaries + data dir + logs)
+postgresql/
+
 # Dependencies & Runtime
 node_modules/
 **/node_modules/
@@ -17,6 +20,9 @@ dist/
 *.db
 *.db-journal
 backups/
+
+# Generated legacy-SQLITE Prisma client (not the main @prisma/client)
+apps/api/prisma/generated/
 
 # Archives & Temporary Packages
 *.zip
