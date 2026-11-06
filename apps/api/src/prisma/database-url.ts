@@ -3,10 +3,9 @@ import { isAbsolute, join } from 'path';
 /**
  * Resolves DATABASE_URL for the Prisma Client.
  *
- * PostgreSQL is the runtime database. Relative SQLite `file:` URLs are converted
- * to absolute paths (Prisma CLI resolves them against apps/api/prisma, the
- * generated legacy SQLite client may resolve them elsewhere) so the legacy
- * SQLite tooling and the `prisma` CLI keep opening the same database file.
+ * PostgreSQL is the only supported runtime database. A relative SQLite `file:`
+ * URL is still resolved against `apps/api/prisma` so an old local `.env` fails
+ * with a clear "file not found" error instead of pointing at an unexpected path.
  */
 export function resolveDatabaseUrl(): string {
   const configured = (process.env.DATABASE_URL || '').trim();

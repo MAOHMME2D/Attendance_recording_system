@@ -24,6 +24,15 @@ import {
 import type { CreateStaffDto } from './dto/create-staff.dto';
 import type { UpdateStaffDto } from './dto/update-staff.dto';
 
+/**
+ * PostgreSQL transaction-level advisory lock key used to serialize every
+ * mutation that could remove the last active Head of Department.
+ *
+ * The key is arbitrary but must stay stable: all API instances must use the
+ * same value so the count-then-update sequence cannot interleave.
+ */
+const STAFF_ROLE_MUTATION_LOCK_KEY = 728194001;
+
 export interface PublicStaffMember {
   id: string;
   staffId: string;
@@ -119,8 +128,24 @@ export class StaffService {
     throw new ForbiddenException('ليست لديك صلاحية لإدارة هذا الحساب');
   }
 
-  private async activeHeadCount(): Promise<number> {
-    return this.prisma.staffUser.count({
+  /**
+   * Serializes staff role/status changes across every API process. The lock is
+   * transaction-scoped, so PostgreSQL releases it automatically on commit or
+   * rollback. The head count must only be read after this call succeeds and
+   * inside the same transaction.
+   */
+  private async acquireStaffRoleLock(
+    tx: Prisma.TransactionClient,
+  ): Promise<void> {
+    await tx.$executeRawUnsafe(
+      `SELECT pg_advisory_xact_lock(${STAFF_ROLE_MUTATION_LOCK_KEY})`,
+    );
+  }
+
+  private async activeHeadCount(
+    tx: Prisma.TransactionClient,
+  ): Promise<number> {
+    return tx.staffUser.count({
       where: { role: 'HEAD_OF_DEPARTMENT', isActive: true },
     });
   }
@@ -201,82 +226,103 @@ export class StaffService {
     actor: AuthenticatedUser,
     ipAddress: string,
   ): Promise<PublicStaffMember> {
-    const target = await this.findTarget(id);
-    this.assertTargetManageable(actor, target);
-
-    const data: {
-      staffId?: string;
-      fullName?: string;
-      role?: string;
-    } = {};
-    const changes: string[] = [];
-
-    if (dto.fullName !== undefined && dto.fullName.trim() !== target.fullName) {
-      data.fullName = cleanFullName(dto.fullName);
-      changes.push('fullName');
+    // Format validation happens before the transaction. Every decision that
+    // depends on the current row (role, active head count) is re-evaluated
+    // inside the transaction while holding the advisory lock.
+    let nextFullName: string | undefined;
+    if (dto.fullName !== undefined) {
+      nextFullName = cleanFullName(dto.fullName);
     }
 
+    let nextStaffId: string | undefined;
     if (dto.staffId !== undefined) {
-      const nextStaffId = normalizeStaffId(dto.staffId);
+      nextStaffId = normalizeStaffId(dto.staffId);
       if (!isValidStaffId(nextStaffId)) {
         throw new BadRequestException('معرف الموظف غير صالح');
       }
-      if (nextStaffId !== target.staffId) {
-        const duplicate = await this.prisma.staffUser.findUnique({
-          where: { staffId: nextStaffId },
-        });
-        if (duplicate) {
-          throw new ConflictException(`المعرف "${nextStaffId}" مستخدم بالفعل`);
-        }
-        data.staffId = nextStaffId;
-        changes.push(`staffId:${target.staffId}->${nextStaffId}`);
-      }
     }
 
-    if (dto.role !== undefined && dto.role !== target.role) {
+    if (dto.role !== undefined) {
       // A Registrar may switch between the two roles it is allowed to manage,
       // but can never promote anyone (including itself) to Head/Registrar/Owner.
       this.assertRoleAllowed(actor, dto.role);
+    }
 
-      if (
-        target.role === 'HEAD_OF_DEPARTMENT' &&
-        target.isActive &&
-        (await this.activeHeadCount()) <= 1
-      ) {
-        throw new ConflictException(
-          'لا يمكن إزالة صلاحية آخر حساب رئيس قسم فعال',
-        );
+    const changes: string[] = [];
+
+    const updated = await this.prisma.$transaction(async (tx) => {
+      await this.acquireStaffRoleLock(tx);
+
+      const current = await tx.staffUser.findUnique({ where: { id } });
+      if (!current) throw new NotFoundException('حساب الموظف غير موجود');
+      this.assertTargetManageable(actor, current);
+
+      const data: {
+        staffId?: string;
+        fullName?: string;
+        role?: string;
+      } = {};
+
+      if (nextFullName !== undefined && nextFullName !== current.fullName) {
+        data.fullName = nextFullName;
+        changes.push('fullName');
       }
 
-      data.role = dto.role;
-      changes.push(`role:${target.role}->${dto.role}`);
-    }
-
-    if (Object.keys(data).length === 0) {
-      return toPublicStaff(target);
-    }
-
-    let updated;
-    try {
-      updated = await this.prisma.staffUser.update({ where: { id }, data });
-    } catch (error) {
-      if (
-        error instanceof Prisma.PrismaClientKnownRequestError &&
-        error.code === 'P2002'
-      ) {
-        throw new ConflictException('معرف الموظف مستخدم بالفعل');
+      if (nextStaffId !== undefined && nextStaffId !== current.staffId) {
+        const duplicate = await tx.staffUser.findUnique({
+          where: { staffId: nextStaffId },
+        });
+        if (duplicate) {
+          throw new ConflictException(
+            `المعرف "${nextStaffId}" مستخدم بالفعل`,
+          );
+        }
+        data.staffId = nextStaffId;
+        changes.push(`staffId:${current.staffId}->${nextStaffId}`);
       }
-      throw error;
-    }
 
-    await this.audit.log({
-      actorUserId: actor.id,
-      action: 'STAFF_UPDATED',
-      entityType: 'StaffUser',
-      entityId: updated.id,
-      details: `changed=${changes.join(',')}`,
-      ipAddress,
+      if (dto.role !== undefined && dto.role !== current.role) {
+        if (
+          current.role === 'HEAD_OF_DEPARTMENT' &&
+          current.isActive &&
+          (await this.activeHeadCount(tx)) <= 1
+        ) {
+          throw new ConflictException(
+            'لا يمكن إزالة صلاحية آخر حساب رئيس قسم فعال',
+          );
+        }
+
+        data.role = dto.role;
+        changes.push(`role:${current.role}->${dto.role}`);
+      }
+
+      if (Object.keys(data).length === 0) {
+        return current;
+      }
+
+      try {
+        return await tx.staffUser.update({ where: { id }, data });
+      } catch (error) {
+        if (
+          error instanceof Prisma.PrismaClientKnownRequestError &&
+          error.code === 'P2002'
+        ) {
+          throw new ConflictException('معرف الموظف مستخدم بالفعل');
+        }
+        throw error;
+      }
     });
+
+    if (changes.length > 0) {
+      await this.audit.log({
+        actorUserId: actor.id,
+        action: 'STAFF_UPDATED',
+        entityType: 'StaffUser',
+        entityId: updated.id,
+        details: `changed=${changes.join(',')}`,
+        ipAddress,
+      });
+    }
 
     return toPublicStaff(updated);
   }
@@ -294,33 +340,47 @@ export class StaffService {
       throw new BadRequestException('لا يمكنك تعطيل حسابك الحالي');
     }
 
-    if (
-      !isActive &&
-      target.role === 'HEAD_OF_DEPARTMENT' &&
-      target.isActive &&
-      (await this.activeHeadCount()) <= 1
-    ) {
-      throw new ConflictException(
-        'لا يمكن تعطيل آخر حساب رئيس قسم فعال',
-      );
-    }
+    const updated = await this.prisma.$transaction(async (tx) => {
+      await this.acquireStaffRoleLock(tx);
 
-    const updated = await this.prisma.staffUser.update({
-      where: { id },
-      data: {
-        isActive,
-        ...(isActive
-          ? { failedLoginCount: 0, lockedUntil: null }
-          : {}),
-      },
-    });
+      const current = await tx.staffUser.findUnique({ where: { id } });
+      if (!current) throw new NotFoundException('حساب الموظف غير موجود');
+      this.assertTargetManageable(actor, current);
 
-    if (!isActive) {
-      await this.prisma.staffSession.updateMany({
-        where: { userId: id, revokedAt: null },
-        data: { revokedAt: new Date() },
+      if (!isActive && current.id === actor.id) {
+        throw new BadRequestException('لا يمكنك تعطيل حسابك الحالي');
+      }
+
+      if (
+        !isActive &&
+        current.role === 'HEAD_OF_DEPARTMENT' &&
+        current.isActive &&
+        (await this.activeHeadCount(tx)) <= 1
+      ) {
+        throw new ConflictException(
+          'لا يمكن تعطيل آخر حساب رئيس قسم فعال',
+        );
+      }
+
+      const result = await tx.staffUser.update({
+        where: { id },
+        data: {
+          isActive,
+          ...(isActive
+            ? { failedLoginCount: 0, lockedUntil: null }
+            : {}),
+        },
       });
-    }
+
+      if (!isActive) {
+        await tx.staffSession.updateMany({
+          where: { userId: id, revokedAt: null },
+          data: { revokedAt: new Date() },
+        });
+      }
+
+      return result;
+    });
 
     await this.audit.log({
       actorUserId: actor.id,

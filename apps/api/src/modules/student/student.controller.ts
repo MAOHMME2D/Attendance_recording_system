@@ -22,7 +22,7 @@ import type { AuthenticatedUser } from '../../common/types/authenticated-user';
 export class StudentController {
   constructor(private studentService: StudentService) {}
 
-  /** Full student list with statistics, history and the active QR token. */
+  /** Full student list with statistics and history (never includes QR secrets). */
   @Get()
   @RequirePermissions(PERMISSIONS.STUDENTS_VIEW)
   async getAll(

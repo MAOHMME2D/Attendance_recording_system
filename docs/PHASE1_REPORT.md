@@ -4,6 +4,11 @@ Date: 2026-11-05
 Branch: `online-foundation`
 Status: Phase 1 implementation complete; stopped for review. Phase 2 not started.
 
+> **Historical note:** this report describes the state at the end of Phase 1.
+> PostgreSQL later became the runtime database and the legacy SQLite tooling
+> mentioned below was removed during the pre-Phase-2 cleanup. See
+> `docs/POSTGRES_MIGRATION.md` for the current state.
+
 ---
 
 ## 1. Executive summary
@@ -149,9 +154,10 @@ Roles: `HEAD_OF_DEPARTMENT`, `REGISTRAR`, `LECTURER`, `TECHNICAL_LECTURER`.
 - `POST /api/attendance/register` (old public self check-in) now returns
   **410 Gone**.
 - `/attend` now shows an Arabic notice that student self-attendance is disabled.
-- The live university LAN flow keeps working: `scripts/start_api.bat` sets a
-  non-wildcard `CORS_ORIGINS` for localhost plus the detected LAN IPv4 when the
-  operator has not configured it.
+- The live university LAN flow keeps working: the start script of that time set
+  a non-wildcard `CORS_ORIGINS` for localhost plus the detected LAN IPv4 when the
+  operator had not configured it. (The script was later removed during the
+  hosting cleanup; set `CORS_ORIGINS` explicitly in production.)
 
 ## 9. WebSocket security
 

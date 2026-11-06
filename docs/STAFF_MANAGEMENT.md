@@ -16,8 +16,8 @@
 ### طريقة التشغيل
 
 ```powershell
-# 1) شغّل قاعدة بيانات PostgreSQL (مثبّتة بحزمة المشروع)
-scripts\start_postgres.bat
+# 1) تأكد من أن PostgreSQL يعمل وأن DATABASE_URL مضبوط
+#    (على الاستضافة: استخدم بيانات الاتصال التي يوفّرها المزوّد)
 
 # 2) شغّل الإعداد الأولي (تم تنفيذه؛ يتوقف تلقائيًا إذا سبق التنفيذ)
 pnpm --filter @attendance/api run setup:initial
@@ -159,23 +159,24 @@ POST /api/staff
 - `apps/api/prisma/schema.prisma` + `apps/api/prisma/migrations/`
   (0001_init، 0002_online_foundation، 0003_staff_management) — **مُطبَّقة**
   عبر `prisma migrate deploy`.
-- بيانات SQLite القديمة نُقلت بمحتويات متطابقة عبر
-  `scripts/migrate-sqlite-to-postgres.ts` (أُبقي للمرجعية).
+- بيانات SQLite القديمة نُقلت مرة واحدة بمحتويات متطابقة، ثم أُزيلت أدوات
+  التحويل القديمة بعد التحقق (تبقى في تاريخ Git عند الحاجة).
 
-### SQLite (أُرشِف فقط)
+### SQLite (أُزيلت بالكامل)
 
-- `apps/api/prisma/attendance.db` — أُنشئت منه نسخة احتياطية ولن يُقرأ منها
-  إلا بالأدوات القديمة.
-- المخطط القديمي في `apps/api/prisma/sqlite/schema.prisma` وعميله في
-  `apps/api/generated/client-sqlite` (يستخدمه `scripts/apply-sqlite-phase1.ts` فقط).
+- المخطط القديم وعميله وأدوات الترحيل وملفات البيانات الأرشيفية
+  (`apps/api/prisma/attendance.db` و`backups/*.db`) أُزيلت من المشروع أثناء
+  التنظيف بعد موافقة صريحة.
+- النسخ الاحتياطية الحالية هي نسخ PostgreSQL التي تُنشئها
+  `scripts/backup/backup-postgres.ps1`.
 
 ## 7. الاختبارات
 
 | الملف | العدد |
 | --- | --- |
-| `apps/api/test/security.test.ts` | 25 |
-| `apps/api/test/staff-management.test.ts` | 19 |
-| **الإجمالي** | **44 ناجح** |
+| `apps/api/test/security.test.ts` | 30 |
+| `apps/api/test/staff-management.test.ts` | 21 |
+| **الإجمالي** | **51 ناجح** |
 
 الأمر:
 
@@ -183,9 +184,9 @@ POST /api/staff
 pnpm --filter @attendance/api run test
 ```
 
-يتطلب تشغيل خادم PostgreSQL المحلي (`scripts\start_postgres.bat`)؛ كل اختبار
-ينشئ قاعدة بيانات مؤقتة لحده ويحذفها بعد الانتهاء (عبر `DATABASE_ADMIN_URL` في
-`apps/api/.env`).
+يتطلب خادم PostgreSQL متاحًا عبر `DATABASE_URL`؛ كل اختبار ينشئ قاعدة بيانات
+مؤقتة لحده ويحذفها بعد الانتهاء (عبر `DATABASE_ADMIN_URL` في `apps/api/.env` أو
+متغيّرات بيئة الاستضافة).
 
 التغطية الجديدة تشمل: الإعداد مرة واحدة، رفض التسجيل العام، إنشاء المقرر
 للمحاضرين، منع إنشاء رئيس قسم، منع المحاضر/التقني من إنشاء الحسابات، حماية حساب

@@ -147,7 +147,7 @@ main()
     const message = error instanceof Error ? error.message : String(error);
     if (message.includes('SystemSetting') || message.includes('no such table')) {
       console.error(
-        'جدول SystemSetting غير موجود. شغّل أولًا: pnpm --filter @attendance/api run db:apply-phase1',
+        'جدول SystemSetting غير موجود. شغّل أولًا: pnpm --filter @attendance/api run db:migrate:postgres',
       );
     } else {
       console.error('فشل الإعداد الأولي:', message);

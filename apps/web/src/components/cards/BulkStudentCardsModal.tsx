@@ -1,13 +1,13 @@
 'use client';
 
-import React from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
+import { studentApi } from '../../lib/api';
 
 interface StudentData {
   id: string;
   name: string;
   studentCode: string;
-  qrToken?: string | null;
   studyPeriod?: string | null;
   orderIndex?: number | null;
   section?: string | null;
@@ -19,7 +19,56 @@ interface BulkStudentCardsModalProps {
 }
 
 export default function BulkStudentCardsModal({ students, onClose }: BulkStudentCardsModalProps) {
+  const [tokens, setTokens] = useState<Record<string, string>>({});
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+
+  // The parent rebuilds this array on every render, so depend on the IDs only.
+  const studentIds = useMemo(() => students.map((s) => s.id).join(','), [students]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const queue = [...students];
+    const loaded: Record<string, string> = {};
+    let failed = 0;
+
+    setLoading(true);
+    setLoadError(null);
+
+    const worker = async () => {
+      while (queue.length > 0) {
+        const student = queue.shift();
+        if (!student) break;
+        try {
+          const result = await studentApi.getQr(student.id);
+          loaded[student.id] = result.token;
+        } catch {
+          failed += 1;
+        }
+      }
+    };
+
+    // Fetch through the dedicated, permission-checked QR endpoint instead of
+    // reading tokens from the student list (which no longer contains them).
+    Promise.all(
+      Array.from({ length: Math.min(6, students.length) }, () => worker()),
+    ).then(() => {
+      if (cancelled) return;
+      setTokens(loaded);
+      setLoading(false);
+      if (failed > 0) {
+        setLoadError(`تعذر تحميل رمز QR لـ ${failed} طالب. أعد فتح النافذة للمحاولة مرة أخرى.`);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [studentIds]);
+
   const handlePrint = () => {
+    if (loading) return;
     const originalTitle = document.title;
     document.title = 'بطاقات_حضور_الطلاب_قسم_تقنيات_المختبرات_الطبية';
     window.print();
@@ -92,6 +141,7 @@ export default function BulkStudentCardsModal({ students, onClose }: BulkStudent
             <button
               className="btn btn-primary btn-sm"
               onClick={handlePrint}
+              disabled={loading}
               style={{
                 fontSize: '13.5px',
                 fontWeight: '700',
@@ -101,6 +151,7 @@ export default function BulkStudentCardsModal({ students, onClose }: BulkStudent
                 alignItems: 'center',
                 gap: '8px',
                 padding: '7px 16px',
+                opacity: loading ? 0.6 : 1,
               }}
             >
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -108,7 +159,7 @@ export default function BulkStudentCardsModal({ students, onClose }: BulkStudent
                 <polyline points="7 10 12 15 17 10" />
                 <line x1="12" y1="15" x2="12" y2="3" />
               </svg>
-              تنزيل بصيغة PDF / طباعة فورية
+              {loading ? 'جارٍ تحميل الرموز...' : 'تنزيل بصيغة PDF / طباعة فورية'}
             </button>
             <button className="btn btn-ghost btn-sm" onClick={onClose} style={{ fontSize: '13px' }}>
               إغلاق
@@ -135,6 +186,23 @@ export default function BulkStudentCardsModal({ students, onClose }: BulkStudent
             <strong>طريقة حفظ الملف كـ PDF:</strong> بعد الضغط على زر <strong>"تنزيل بصيغة PDF / طباعة"</strong>، ستفتح نافذة الطباعة فوراً. من خيار <strong>"الوجهة" (Destination)</strong> اختر <strong>"حفظ بتنسيق PDF" (Save as PDF)</strong> للحصول على ملف سريع وعالي الدقة بدون أي تشويه بالحروف العربية.
           </div>
         </div>
+
+        {loadError && (
+          <div
+            className="no-print"
+            style={{
+              background: '#FEF2F2',
+              border: '1px solid #FECACA',
+              color: '#991B1B',
+              borderRadius: '10px',
+              padding: '8px 12px',
+              marginBottom: '12px',
+              fontSize: '12px',
+            }}
+          >
+            {loadError}
+          </div>
+        )}
 
         {/* Printable Cards Grid (Grouped by Pages) */}
         <div
@@ -188,15 +256,21 @@ export default function BulkStudentCardsModal({ students, onClose }: BulkStudent
                   </div>
 
                   {/* QR Code Box - BIGGER SIZE */}
-                  <div style={{ padding: '4px', background: '#FFFFFF', borderRadius: '8px', border: '1.5px solid #D1D5DB', display: 'inline-block', margin: '3px 0' }}>
-                    <QRCodeSVG
-                      value={student.qrToken || student.studentCode}
-                      size={130}
-                      level="M"
-                      marginSize={1}
-                      bgColor="#FFFFFF"
-                      fgColor="#000000"
-                    />
+                  <div style={{ padding: '4px', background: '#FFFFFF', borderRadius: '8px', border: '1.5px solid #D1D5DB', display: 'inline-block', margin: '3px 0', minWidth: '140px', minHeight: '140px' }}>
+                    {tokens[student.id] ? (
+                      <QRCodeSVG
+                        value={tokens[student.id]}
+                        size={130}
+                        level="M"
+                        marginSize={1}
+                        bgColor="#FFFFFF"
+                        fgColor="#000000"
+                      />
+                    ) : (
+                      <div style={{ color: '#6B7280', fontSize: '10px', padding: '55px 6px' }}>
+                        {loading ? 'جارٍ التحميل...' : 'رمز غير متاح'}
+                      </div>
+                    )}
                   </div>
 
                   <div style={{ width: '100%', marginTop: '3px' }}>

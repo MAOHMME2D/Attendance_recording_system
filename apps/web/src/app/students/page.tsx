@@ -26,7 +26,6 @@ interface StudentWithStats {
   orderIndex: number;
   studentCode: string;
   name: string;
-  qrToken?: string | null;
   studyPeriod?: string;
   section?: string;
   presentCount: number;
@@ -1249,14 +1248,6 @@ export default function StudentsPage() {
       <StudentQrCardModal
         student={selectedStudentForCard}
         onClose={() => setSelectedStudentForCard(null)}
-        onRotated={(studentId, token) => {
-          setStudents((prev) =>
-            prev.map((item) => (item.id === studentId ? { ...item, qrToken: token } : item)),
-          );
-          setSelectedStudentForCard((prev) =>
-            prev && prev.id === studentId ? { ...prev, qrToken: token } : prev,
-          );
-        }}
       />
 
       {/* Bulk Student Cards Print Modal */}

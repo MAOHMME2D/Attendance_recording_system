@@ -1,7 +1,6 @@
 // RUNTIME DATABASE IS POSTGRESQL.
 // Migrations live in prisma/migrations/ (0001_init, 0002_online_foundation,
-// 0003_staff_management). The legacy SQLite schema for offline tooling is at
-// prisma/sqlite/schema.prisma. Keep both schemas in sync.
+// 0003_staff_management).
 // See docs/POSTGRES_MIGRATION.md.
 datasource db {
   provider = "postgresql"

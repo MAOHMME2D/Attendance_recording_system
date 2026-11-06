@@ -9,6 +9,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import { normalizeSection } from '../../common/utils/section.util';
 import type { AuthenticatedUser } from '../../common/types/authenticated-user';
+import { Prisma } from '@prisma/client';
 import * as crypto from 'crypto';
 
 @Injectable()
@@ -36,11 +37,6 @@ export class StudentService {
     const students = await this.prisma.student.findMany({
       where: whereClause,
       include: {
-        qrTokens: {
-          where: { revokedAt: null },
-          orderBy: { createdAt: 'desc' },
-          take: 1,
-        },
         attendances: {
           include: {
             lecture: {
@@ -84,7 +80,6 @@ export class StudentService {
         name: student.name, // اسم الطالب (عمود B)
         studyPeriod: student.studyPeriod || 'MORNING', // صباحي / مسائي
         section: student.section || '', // الشعبة (عمود C)
-        qrToken: student.qrTokens[0]?.token || null,
         presentCount: totalPresent, // عدد الحضور (عمود D)
         absentCount: totalAbsent, // عدد مرات الغياب (عمود E)
         totalLectures: totalSessions, // إجمالي المحاضرات (عمود F)
@@ -153,22 +148,45 @@ export class StudentService {
     return `qr_${crypto.randomBytes(24).toString('base64url')}`;
   }
 
-  /** Returns the active token, creating one if the student has none. */
-  async ensureQrToken(studentId: string, actorId?: string) {
-    const existing = await this.prisma.studentQrToken.findFirst({
-      where: { studentId, revokedAt: null },
-      orderBy: { createdAt: 'desc' },
-    });
-    if (existing) return existing;
-
-    return this.issueQrToken(studentId, actorId);
+  /**
+   * Serializes token issuance/rotation for one student. Without this, two
+   * simultaneous requests could both observe "no active token" and create two.
+   * Transaction-scoped, so PostgreSQL releases it on commit/rollback.
+   */
+  private async acquireStudentQrLock(
+    tx: Prisma.TransactionClient,
+    studentId: string,
+  ): Promise<void> {
+    await tx.$executeRawUnsafe(
+      'SELECT pg_advisory_xact_lock(hashtext($1))',
+      studentId,
+    );
   }
 
-  private async issueQrToken(studentId: string, actorId?: string) {
+  /** Returns the active token, creating one if the student has none. */
+  async ensureQrToken(studentId: string, actorId?: string) {
+    return this.prisma.$transaction(async (tx) => {
+      await this.acquireStudentQrLock(tx, studentId);
+
+      const existing = await tx.studentQrToken.findFirst({
+        where: { studentId, revokedAt: null },
+        orderBy: { createdAt: 'desc' },
+      });
+      if (existing) return existing;
+
+      return this.issueQrToken(studentId, actorId, tx);
+    });
+  }
+
+  private async issueQrToken(
+    studentId: string,
+    actorId: string | undefined,
+    tx: Prisma.TransactionClient,
+  ) {
     // Retry on the (very unlikely) unique collision.
     for (let attempt = 0; attempt < 5; attempt++) {
       try {
-        return await this.prisma.studentQrToken.create({
+        return await tx.studentQrToken.create({
           data: {
             studentId,
             token: this.generateQrToken(),
@@ -187,24 +205,31 @@ export class StudentService {
 
   /** Revokes the current token and returns a fresh one. */
   async rotateQrToken(studentId: string, actor: AuthenticatedUser) {
-    const student = await this.prisma.student.findUnique({ where: { id: studentId } });
-    if (!student) {
-      throw new NotFoundException('الطالب غير موجود');
-    }
+    let studentCode = '';
 
-    await this.prisma.studentQrToken.updateMany({
-      where: { studentId, revokedAt: null },
-      data: { revokedAt: new Date() },
+    const token = await this.prisma.$transaction(async (tx) => {
+      await this.acquireStudentQrLock(tx, studentId);
+
+      const student = await tx.student.findUnique({ where: { id: studentId } });
+      if (!student) {
+        throw new NotFoundException('الطالب غير موجود');
+      }
+      studentCode = student.studentCode;
+
+      await tx.studentQrToken.updateMany({
+        where: { studentId, revokedAt: null },
+        data: { revokedAt: new Date() },
+      });
+
+      return this.issueQrToken(studentId, actor.id, tx);
     });
-
-    const token = await this.issueQrToken(studentId, actor.id);
 
     await this.audit.log({
       actorUserId: actor.id,
       action: 'STUDENT_QR_ROTATE',
       entityType: 'Student',
       entityId: studentId,
-      details: student.studentCode,
+      details: studentCode,
     });
 
     return token;
@@ -217,7 +242,7 @@ export class StudentService {
       select: { id: true },
     });
     for (const student of students) {
-      await this.issueQrToken(student.id);
+      await this.ensureQrToken(student.id);
     }
     return students.length;
   }

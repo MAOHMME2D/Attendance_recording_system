@@ -1,8 +1,8 @@
 /**
  * Staff-management and one-time-initial-setup tests.
  *
- * They run against a throwaway SQLite database in the OS temp folder and never
- * touch apps/api/prisma/attendance.db (the live installation data).
+ * They run against a throwaway PostgreSQL database on the local server and
+ * never touch the live attendance database or its data.
  */
 import { after, before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
@@ -94,9 +94,8 @@ async function applySchema(): Promise<void> {
     process.execPath,
     [
       prismaCliPath(),
-      'db',
-      'push',
-      '--skip-generate',
+      'migrate',
+      'deploy',
       '--schema',
       join(API_DIR, 'prisma', 'schema.prisma'),
     ],
@@ -605,6 +604,87 @@ describe('last active head of department protection', () => {
       where: { role: 'HEAD_OF_DEPARTMENT', isActive: true },
     });
     assert.equal(activeHeads, 1);
+  });
+
+  async function ensureTwoActiveHeads() {
+    const first = await prisma.staffUser.findUnique({
+      where: { staffId: STAFF_IDS.head },
+    });
+    assert.ok(first);
+    await prisma.staffUser.update({
+      where: { id: first!.id },
+      data: { role: 'HEAD_OF_DEPARTMENT', isActive: true },
+    });
+
+    const second = await prisma.staffUser.upsert({
+      where: { staffId: 'head-concurrent' },
+      update: { role: 'HEAD_OF_DEPARTMENT', isActive: true },
+      create: {
+        staffId: 'head-concurrent',
+        fullName: 'رئيس قسم متزامن',
+        role: 'HEAD_OF_DEPARTMENT',
+        passwordHash: await bcrypt.hash(PASSWORDS.head, 4),
+        isActive: true,
+      },
+    });
+
+    return { first: first!, second };
+  }
+
+  it('serializes two concurrent deactivations so one active head always remains', async () => {
+    const { first, second } = await ensureTwoActiveHeads();
+
+    const [a, b] = await Promise.all([
+      api(`/api/staff/${first.id}/status`, {
+        method: 'PATCH',
+        token: tokens.owner,
+        body: { isActive: false },
+      }),
+      api(`/api/staff/${second.id}/status`, {
+        method: 'PATCH',
+        token: tokens.owner,
+        body: { isActive: false },
+      }),
+    ]);
+
+    assert.deepEqual(
+      [a.status, b.status].sort((x, y) => x - y),
+      [200, 409],
+      `expected exactly one rejection: ${a.status}/${b.status}`,
+    );
+
+    const activeHeads = await prisma.staffUser.count({
+      where: { role: 'HEAD_OF_DEPARTMENT', isActive: true },
+    });
+    assert.equal(activeHeads, 1, 'concurrent deactivations must never leave zero active heads');
+  });
+
+  it('serializes deactivation against demotion of the last two heads', async () => {
+    const { first, second } = await ensureTwoActiveHeads();
+
+    const [deactivate, demote] = await Promise.all([
+      api(`/api/staff/${first.id}/status`, {
+        method: 'PATCH',
+        token: tokens.owner,
+        body: { isActive: false },
+      }),
+      api(`/api/staff/${second.id}`, {
+        method: 'PATCH',
+        token: tokens.owner,
+        body: { role: 'LECTURER' },
+      }),
+    ]);
+
+    assert.deepEqual(
+      [deactivate.status, demote.status].sort((x, y) => x - y),
+      [200, 409],
+      `expected exactly one rejection: ${deactivate.status}/${demote.status}`,
+    );
+
+    const activeHeads = await prisma.staffUser.count({
+      where: { role: 'HEAD_OF_DEPARTMENT', isActive: true },
+    });
+    assert.equal(activeHeads, 1, 'role changes must not remove the last active head');
   });
 });
 

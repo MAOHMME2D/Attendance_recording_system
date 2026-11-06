@@ -1,31 +1,31 @@
 # PostgreSQL Migration (APPLIED)
 
 This document previously described a *plan*. PostgreSQL is now the **runtime
-database**. The cutover happened on this machine; the SQLite file remains
-archived as a backup only.
+database**, and the deployable project targets a hosted PostgreSQL instance.
 
 ## Current status
 
-- **Runtime:** PostgreSQL 16.9, portable binaries managed inside the repository
-  at `postgresql/` (git-ignored: binaries, `data/`, `wal/`, `logs/`), running
-  as the Windows service **`PostgreSQL-Attendance`** (LocalSystem, automatic).
+- **Runtime:** PostgreSQL is required by the API. The current machine keeps a
+  local PostgreSQL under `postgresql/` (git-ignored: binaries, `data/`, `wal/`,
+  `logs/`) for its existing data. That folder is local-only and must not be
+  uploaded to hosting; production uses the PostgreSQL service/connection string
+  provided by the host.
 - **Schema:** `apps/api/prisma/schema.prisma` (provider `postgresql`),
   migrations in `apps/api/prisma/migrations/` (0001_init, 0002_online_foundation,
   0003_staff_management) — all applied via `prisma migrate deploy`.
-- **Data:** copied from the archived SQLite file with
-  `pnpm --filter @attendance/api run db:copy-sqlite-to-postgres`. Verified row
-  counts per table: students 297, sections 11, lectures 4, attendance 151,
-  QR tokens 297, staff users, audit logs, sessions — all matched, nothing
-  deleted.
+- **Data:** copied once from the archived SQLite file and verified: students
+  297, sections 11, lectures 4, attendance 151, QR tokens 297, staff users,
+  audit logs, sessions — all matched, nothing deleted. The one-time copy script
+  was removed after verification (it remains in git history).
 - **Accounts:** the one-time initial setup ran against PostgreSQL:
   `owner-test` (SYSTEM_OWNER), `head1` (HEAD_OF_DEPARTMENT, adopted with a new
   password and revoked old sessions), `registrar1` (REGISTRAR).
-- **SQLite:** retained **only** as legacy tooling
-  (`apps/api/prisma/sqlite/schema.prisma` with its generated client at
-  `apps/api/generated/client-sqlite`, used by
-  `scripts/apply-sqlite-phase1.ts` and nothing else). The old file
-  `apps/api/prisma/attendance.db` is untouched.
-- **Tests:** all 44 API tests now run against throwaway PostgreSQL databases
+- **SQLite:** no longer part of the project. The legacy schema, generated
+  client, SQL migration files, both conversion scripts and the archived SQLite
+  files (`apps/api/prisma/attendance.db`, `backups/*.db`) were removed during
+  the pre-Phase-2 cleanup after an explicit decision. PostgreSQL backups are
+  handled by `scripts/backup/backup-postgres.ps1`.
+- **Tests:** all 51 API tests now run against throwaway PostgreSQL databases
   created and dropped by the suites (they read `DATABASE_ADMIN_URL` from
   `apps/api/.env`).
 
@@ -35,31 +35,37 @@ archived as a backup only.
 | --- | --- |
 | `apps/api/prisma/schema.prisma` | PostgreSQL runtime schema (main). |
 | `apps/api/prisma/migrations/` | PostgreSQL migrations (was `prisma/postgres/migrations/`). |
-| `apps/api/prisma/sqlite/schema.prisma` | Legacy SQLite schema, generated client moved to `apps/api/generated/client-sqlite`. |
 | `apps/api/src/prisma/database-url.ts` | Postgres-first; passes URLs through, no silent SQLite fallback. |
-| `apps/api/scripts/migrate-sqlite-to-postgres.ts` | One-time verified data copy (kept for reference/rollback rebuilds). |
-| `apps/api/package.json` | `db:migrate:postgres` = `prisma migrate deploy`; `db:generate` generates both clients. |
-| `scripts/install_postgres.ps1` | Installs the portable PostgreSQL (binaries + initdb + start). |
-| `scripts/start_postgres.bat` / `scripts/stop_postgres.bat` | Start/stop the bundled server. |
-| `scripts/start_api.bat` | Starts PostgreSQL first, then the API. |
+| `apps/api/package.json` | `db:migrate:postgres` = `prisma migrate deploy`; `db:generate` generates the PostgreSQL client only. |
 | `apps/api/test/*.ts` | Test suites use unique throwaway PostgreSQL databases. |
 
-## Day-to-day commands
+## Hosting deployment
 
-PostgreSQL is installed as a **Windows service** `PostgreSQL-Attendance`
-(runs as LocalSystem, StartType: Automatic) so the database starts by itself
-when the machine boots — `start_postgres.bat` is no longer required in normal
-use; `scripts\start_api.bat` only double-checks it before starting the API.
+The local Windows helpers (`bin/`, portable Node.js, `Run_System.bat`,
+`Update_System.bat`, `Create_Update_Package.bat`, and the `start_*.bat` /
+`install_postgres.ps1` scripts) were removed: they were only for running the
+system on the professor's machine. The hosting provider supplies Node.js and
+PostgreSQL.
 
-```powershell
-# Manual control (needs an administrator window for start/stop)
-net start PostgreSQL-Attendance
-net stop  PostgreSQL-Attendance
+```bash
+# On the hosting server, with DATABASE_URL and DATABASE_ADMIN_URL set:
+pnpm install --frozen-lockfile
+pnpm db:generate
+pnpm db:migrate:deploy
+pnpm build
 
-# Apply pending migrations
-pnpm --filter @attendance/api run db:migrate:postgres
+# API
+pnpm --filter @attendance/api run start:prod
 
-# Tests (server must be running; suites create/drop their own databases)
+# Web
+pnpm --filter @attendance/web run start
+```
+
+Local-only paths that must never be uploaded: `postgresql/`, `node_modules/`,
+`.next/`, `dist/`, `.env`, and `apps/api/.env`.
+
+```bash
+# Tests (a PostgreSQL server must be reachable; suites create/drop their own databases)
 pnpm --filter @attendance/api run test
 ```
 
@@ -70,15 +76,13 @@ pnpm --filter @attendance/api run test
   (`DATABASE_ADMIN_URL`), git-ignored. Never use it as runtime role.
 - `attendance_user` — application role, owner of the `attendance` database,
   used in `DATABASE_URL`.
-- Passwords were generated at cutover; keep them in `apps/api/.env` only and
-  change them if they were shared. For production on another host, create the
-  role/database there and point `DATABASE_URL` at it; never reuse the local
+- Passwords were generated at cutover; keep them in the hosting environment
+  variables only and change them if they were shared. Create the role/database
+  on the hosting server and point `DATABASE_URL` at it; never reuse the local
   password.
 
 ## Rollback
 
-Nothing was deleted. To fall back to SQLite, restore
-`DATABASE_URL=file:./attendance.db` with the **legacy sqlite client**
-(re-generate `@prisma/client` from `prisma/sqlite/schema.prisma`) — but the
-correct path forward is keeping PostgreSQL; the SQLite file should be treated
-as backup-only.
+The runtime path is PostgreSQL only. The legacy SQLite schema, its tooling and
+the archived SQLite data files were removed. Falling back to SQLite is not
+supported; restore from a PostgreSQL dump made by the backup scripts instead.

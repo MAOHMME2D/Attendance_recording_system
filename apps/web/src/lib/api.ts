@@ -289,7 +289,6 @@ export interface StudentListItem {
   name: string;
   studyPeriod?: string;
   section?: string;
-  qrToken?: string | null;
   presentCount: number;
   absentCount: number;
   totalLectures: number;

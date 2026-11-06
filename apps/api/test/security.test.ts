@@ -1,8 +1,8 @@
 /**
  * Phase 1 security tests.
  *
- * These tests run against a throwaway SQLite database in the OS temp folder.
- * They never touch apps/api/prisma/attendance.db (the live installation data).
+ * These tests run against a throwaway PostgreSQL database on the local server.
+ * They never touch the live attendance database or its data.
  */
 import { after, before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
@@ -51,6 +51,7 @@ let baseUrl = '';
 let wsUrl = '';
 const tokens: Partial<Record<StaffKey, string>> = {};
 const userIds: Partial<Record<StaffKey, string>> = {};
+let rotatedQr = '';
 const ids = {
   lectureMine: '',
   lectureOther: '',
@@ -59,6 +60,8 @@ const ids = {
   studentWithTokenQr: 'qr_phase1_opaque_test_token_0001',
   studentLegacyCode: 'LEGACY-0001',
   revokedQr: 'qr_phase1_revoked_test_token_0002',
+  studentRotateId: '',
+  rotateOldQr: 'qr_phase1_rotate_old_0003',
 };
 
 function postgresAdminUrl(): string {
@@ -95,9 +98,8 @@ async function applySchema(): Promise<void> {
     process.execPath,
     [
       prismaCliPath(),
-      'db',
-      'push',
-      '--skip-generate',
+      'migrate',
+      'deploy',
       '--schema',
       join(API_DIR, 'prisma', 'schema.prisma'),
     ],
@@ -241,6 +243,19 @@ before(async () => {
       },
     },
   });
+
+  const studentRotate = await prisma.student.create({
+    data: {
+      studentCode: 'ROTATE-0003',
+      name: 'طالب ثالث',
+      studyPeriod: 'MORNING',
+      section: '1',
+      qrTokens: {
+        create: { token: ids.rotateOldQr },
+      },
+    },
+  });
+  ids.studentRotateId = studentRotate.id;
 
   // Lecture owned and conducted by lecturer A.
   const lectureMine = await prisma.lecture.create({
@@ -474,7 +489,7 @@ describe('technical lecturer restrictions', () => {
     const result = await api(`/api/attendance/${ids.lectureTech}/scan-student`, {
       method: 'POST',
       token: tokens.techA!,
-      body: { studentCode: ids.studentLegacyCode },
+      body: { studentCode: ids.studentWithTokenQr },
     });
     assert.equal(result.status, 201);
     assert.equal(result.body.success, true);
@@ -520,8 +535,8 @@ describe('lecturer isolation', () => {
   });
 });
 
-describe('student QR compatibility', () => {
-  it('accepts the new opaque QR token', async () => {
+describe('student QR-only attendance', () => {
+  it('accepts an active opaque QR token', async () => {
     const result = await api(`/api/attendance/${ids.lectureMine}/scan-student`, {
       method: 'POST',
       token: tokens.lecturerA!,
@@ -532,24 +547,118 @@ describe('student QR compatibility', () => {
     assert.equal(result.body.studentName, 'طالب أول');
   });
 
-  it('still accepts a legacy sequential student code', async () => {
+  it('rejects a legacy sequential student code', async () => {
     const result = await api(`/api/attendance/${ids.lectureMine}/scan-student`, {
       method: 'POST',
       token: tokens.lecturerA!,
       body: { studentCode: ids.studentLegacyCode },
     });
-    assert.equal(result.status, 201);
-    assert.equal(result.body.success, true);
-    assert.equal(result.body.studentName, 'طالب ثانٍ');
+    assert.equal(result.status, 400);
+    assert.match(String(result.body.message), /QR|رمز/);
+
+    const records = await prisma.attendanceRecord.count({
+      where: { lectureId: ids.lectureMine, studentCode: ids.studentLegacyCode },
+    });
+    assert.equal(records, 0, 'a studentCode must never create an attendance record');
   });
 
-  it('rejects a revoked QR token instead of falling back to a name match', async () => {
+  it('rejects a full student name', async () => {
+    const result = await api(`/api/attendance/${ids.lectureMine}/scan-student`, {
+      method: 'POST',
+      token: tokens.lecturerA!,
+      body: { studentCode: 'طالب ثانٍ' },
+    });
+    assert.equal(result.status, 400);
+  });
+
+  it('rejects an unknown QR token', async () => {
+    const result = await api(`/api/attendance/${ids.lectureMine}/scan-student`, {
+      method: 'POST',
+      token: tokens.lecturerA!,
+      body: { studentCode: 'qr_unknown_token_9999' },
+    });
+    assert.equal(result.status, 400);
+  });
+
+  it('rejects a revoked QR token instead of falling back to studentCode or name', async () => {
     const result = await api(`/api/attendance/${ids.lectureMine}/scan-student`, {
       method: 'POST',
       token: tokens.lecturerA!,
       body: { studentCode: ids.revokedQr },
     });
     assert.equal(result.status, 400);
+
+    const records = await prisma.attendanceRecord.count({
+      where: {
+        lectureId: ids.lectureMine,
+        studentId: (
+          await prisma.student.findUnique({
+            where: { studentCode: ids.studentLegacyCode },
+            select: { id: true },
+          })
+        )?.id,
+      },
+    });
+    assert.equal(records, 0, 'a revoked token must not register attendance');
+  });
+
+  it('revokes the old card on rotation and accepts only the new token', async () => {
+    const rotated = await api(`/api/students/${ids.studentRotateId}/qr/rotate`, {
+      method: 'POST',
+      token: tokens.head!,
+    });
+    assert.equal(rotated.status, 201, JSON.stringify(rotated.body));
+    rotatedQr = rotated.body.token;
+    assert.notEqual(rotatedQr, ids.rotateOldQr);
+    assert.match(rotatedQr, /^qr_/);
+
+    const oldCard = await api(`/api/attendance/${ids.lectureMine}/scan-student`, {
+      method: 'POST',
+      token: tokens.lecturerA!,
+      body: { studentCode: ids.rotateOldQr },
+    });
+    assert.equal(oldCard.status, 400, 'the old card must be rejected after rotation');
+
+    const newCard = await api(`/api/attendance/${ids.lectureMine}/scan-student`, {
+      method: 'POST',
+      token: tokens.lecturerA!,
+      body: { studentCode: rotatedQr },
+    });
+    assert.equal(newCard.status, 201, JSON.stringify(newCard.body));
+    assert.equal(newCard.body.studentName, 'طالب ثالث');
+  });
+
+  it('never exposes QR tokens in the student list', async () => {
+    const result = await api('/api/students', { token: tokens.head! });
+    assert.equal(result.status, 200);
+    assert.ok(Array.isArray(result.body));
+    assert.ok(result.body.length > 0);
+
+    for (const student of result.body) {
+      assert.equal(
+        Object.prototype.hasOwnProperty.call(student, 'qrToken'),
+        false,
+        'GET /students must not contain a qrToken field',
+      );
+    }
+
+    const serialized = JSON.stringify(result.body);
+    for (const secret of [ids.studentWithTokenQr, ids.revokedQr, rotatedQr, ids.rotateOldQr]) {
+      assert.equal(serialized.includes(secret), false, 'student list leaked a QR token');
+    }
+  });
+
+  it('keeps the dedicated QR endpoint authorized and revocable', async () => {
+    const authorized = await api(`/api/students/${ids.studentWithTokenId}/qr`, {
+      token: tokens.head!,
+    });
+    assert.equal(authorized.status, 200);
+    assert.equal(authorized.body.token, ids.studentWithTokenQr);
+
+    const forbidden = await api(`/api/students/${ids.studentWithTokenId}/qr`, {
+      token: tokens.lecturerA!,
+    });
+    assert.equal(forbidden.status, 403);
   });
 });
 

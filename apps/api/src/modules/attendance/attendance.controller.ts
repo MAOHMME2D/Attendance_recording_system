@@ -53,7 +53,7 @@ export class AttendanceController {
     return this.attendanceService.toggleStatus(id, user);
   }
 
-  /** Scan a student card (opaque QR token or legacy studentCode). */
+  /** Scan a student card. Only active opaque QR tokens are accepted. */
   @Post(':lectureId/scan-student')
   @RequirePermissions(PERMISSIONS.LECTURE_CONDUCT)
   async scanStudent(
