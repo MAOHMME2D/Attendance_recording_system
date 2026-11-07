@@ -1,13 +1,14 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
-import { sectionApi, SectionItem, STUDY_PERIODS } from '../../lib/api';
+import { sectionApi, SectionItem, STUDY_PERIODS, STAGE_OPTIONS, STAGE_LABELS } from '../../lib/api';
 
 interface SectionManagerModalProps {
   isOpen: boolean;
   onClose: () => void;
   onSectionsChanged?: () => void;
   initialPeriod?: 'MORNING' | 'EVENING';
+  initialStage?: number;
 }
 
 export default function SectionManagerModal({
@@ -15,9 +16,11 @@ export default function SectionManagerModal({
   onClose,
   onSectionsChanged,
   initialPeriod = 'MORNING',
+  initialStage = 2,
 }: SectionManagerModalProps) {
   const [sections, setSections] = useState<SectionItem[]>([]);
   const [activeTab, setActiveTab] = useState<'MORNING' | 'EVENING'>(initialPeriod);
+  const [activeStage, setActiveStage] = useState<number>(initialStage);
   const [newSectionName, setNewSectionName] = useState('');
   const [loading, setLoading] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
@@ -41,15 +44,18 @@ export default function SectionManagerModal({
     if (isOpen) {
       loadSections();
       setActiveTab(initialPeriod);
+      setActiveStage(initialStage);
       setNewSectionName('');
       setError(null);
       setSuccessMsg(null);
     }
-  }, [isOpen, initialPeriod]);
+  }, [isOpen, initialPeriod, initialStage]);
 
   if (!isOpen) return null;
 
-  const currentTabSections = sections.filter((s) => s.studyPeriod === activeTab);
+  const currentTabSections = sections.filter(
+    (s) => s.studyPeriod === activeTab && s.stage === activeStage,
+  );
 
   const handleAddSection = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -62,12 +68,15 @@ export default function SectionManagerModal({
 
     try {
       await sectionApi.create({
+        stage: activeStage,
         studyPeriod: activeTab,
         name: cleanName,
         label: `الشعبة ${cleanName}`,
       });
       setNewSectionName('');
-      setSuccessMsg(`تمت إضافة الشعبة (${cleanName}) بنجاح`);
+      setSuccessMsg(
+        `تمت إضافة الشعبة (${cleanName}) إلى ${STAGE_LABELS[activeStage as 1 | 2 | 3 | 4]}`,
+      );
       await loadSections();
       if (onSectionsChanged) onSectionsChanged();
     } catch (err: any) {
@@ -81,7 +90,7 @@ export default function SectionManagerModal({
     const confirmed = window.confirm(
       `هل أنت متأكد من حذف الشعبة (${sec.label || sec.name}) من ${
         sec.studyPeriod === 'EVENING' ? 'الدراسة المسائية' : 'الدراسة الصباحية'
-      }؟`
+      } - ${STAGE_LABELS[sec.stage as 1 | 2 | 3 | 4]}؟`,
     );
     if (!confirmed) return;
 
@@ -184,6 +193,43 @@ export default function SectionManagerModal({
           </button>
         </div>
 
+        {/* Stage Selector */}
+        <div
+          style={{
+            display: 'flex',
+            gap: '6px',
+            padding: '12px 20px 0',
+            flexWrap: 'wrap',
+          }}
+        >
+          {STAGE_OPTIONS.map((stage) => {
+            const isActive = activeStage === stage.value;
+            return (
+              <button
+                key={stage.value}
+                type="button"
+                onClick={() => {
+                  setActiveStage(stage.value);
+                  setError(null);
+                  setSuccessMsg(null);
+                }}
+                style={{
+                  padding: '6px 14px',
+                  borderRadius: '20px',
+                  border: isActive ? '1.5px solid #4F46E5' : '1px solid #D1D5DB',
+                  background: isActive ? '#EEF2FF' : '#FFFFFF',
+                  color: isActive ? '#4338CA' : '#4B5563',
+                  cursor: 'pointer',
+                  fontWeight: isActive ? '700' : '600',
+                  fontSize: '12.5px',
+                }}
+              >
+                {stage.label}
+              </button>
+            );
+          })}
+        </div>
+
         {/* Study Period Tabs */}
         <div
           style={{
@@ -266,7 +312,8 @@ export default function SectionManagerModal({
                 marginBottom: '6px',
               }}
             >
-              إضافة شعبة جديدة إلى ({activeTab === 'EVENING' ? 'الدراسة المسائية' : 'الدراسة الصباحية'}):
+              إضافة شعبة جديدة إلى ({STAGE_LABELS[activeStage as 1 | 2 | 3 | 4]} -{' '}
+              {activeTab === 'EVENING' ? 'الدراسة المسائية' : 'الدراسة الصباحية'}):
             </label>
             <div style={{ display: 'flex', gap: '8px' }}>
               <input

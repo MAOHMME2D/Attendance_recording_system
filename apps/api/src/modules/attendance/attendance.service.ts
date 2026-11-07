@@ -7,6 +7,18 @@ import {
 import { PrismaService } from '../../prisma/prisma.service';
 import { LectureService } from '../lecture/lecture.service';
 import { AttendanceGateway } from '../lecture/attendance.gateway';
+import { AuditService } from '../audit/audit.service';
+import { normalizeSection } from '../../common/utils/section.util';
+import { recomputeStudentStats } from '../../common/utils/student-stats.util';
+import type { AuthenticatedUser } from '../../common/types/authenticated-user';
+
+function isUniqueViolation(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    (error as { code?: string }).code === 'P2002'
+  );
+}
 
 @Injectable()
 export class AttendanceService {
@@ -16,126 +28,125 @@ export class AttendanceService {
     private prisma: PrismaService,
     private lectureService: LectureService,
     private gateway: AttendanceGateway,
+    private audit: AuditService,
   ) {}
 
   /**
-   * Register attendance - student scans QR, enters their ID or Name
+   * Rejects students whose study period or section does not match the lecture.
+   * Without this check a student from section 3 could scan the QR of a
+   * section 1 lecture and be recorded as present.
    */
-  async register(token: string, studentIdentifier: string, deviceId?: string, ipAddress?: string) {
-    // 1. Validate QR token
-    const validation = await this.lectureService.validateQrToken(token);
-    if (!validation.valid || !validation.lectureId) {
-      throw new BadRequestException(validation.reason || 'رمز QR غير صالح أو منتهي الصلاحية');
+  private assertStudentBelongsToLecture(
+    lecture: {
+      id: string;
+      name: string;
+      studyPeriod: string | null;
+      section: string | null;
+      course?: { stage: number } | null;
+    },
+    student: {
+      name: string;
+      studyPeriod: string | null;
+      section: string | null;
+      sectionId?: string | null;
+      sectionRef?: { name: string } | null;
+      stage: number;
+      deletedAt?: Date | null;
+    },
+  ) {
+    if (student.deletedAt) {
+      throw new BadRequestException(
+        `الطالب (${student.name}) محذوف من النظام، ولا يمكن تسجيل حضوره.`,
+      );
     }
 
-    const lectureId = validation.lectureId;
-    const inputClean = studentIdentifier.trim();
-
-    if (!inputClean) {
-      throw new BadRequestException('يرجى إدخال الرقم التعريفي (ID) أو الاسم');
-    }
-
-    // 2. Prevent the same device from registering more than once for this lecture
-    if (deviceId && deviceId.trim()) {
-      const existingDevice = await this.prisma.attendanceRecord.findFirst({
-        where: {
-          lectureId,
-          deviceId: deviceId.trim(),
-        },
-      });
-
-      if (existingDevice) {
-        throw new ConflictException(
-          `تم تسجيل الحضور من هذا الجهاز مسبقاً باسم (${existingDevice.studentName})! يُسمح بتسجيل الحضور مرة واحدة فقط لكل جهاز.`
-        );
-      }
-    }
-
-    // 3. Look up student in database by ID (studentCode) or name
-    let resolvedName = inputClean;
-    let resolvedStudentId: string | null = null;
-    let resolvedStudentCode: string | null = null;
-
-    const studentByCode = await this.prisma.student.findUnique({
-      where: { studentCode: inputClean },
-    });
-
-    if (studentByCode) {
-      resolvedName = studentByCode.name;
-      resolvedStudentId = studentByCode.id;
-      resolvedStudentCode = studentByCode.studentCode;
-    } else {
-      const studentByName = await this.prisma.student.findFirst({
-        where: { name: inputClean },
-      });
-      if (studentByName) {
-        resolvedName = studentByName.name;
-        resolvedStudentId = studentByName.id;
-        resolvedStudentCode = studentByName.studentCode;
-      } else {
-        // If there are registered students in the DB, require valid ID
-        const totalStudents = await this.prisma.student.count();
-        if (totalStudents > 0) {
-          throw new BadRequestException(
-            `الرقم التعريفي (ID) "${inputClean}" غير مسجل في قاعدة بيانات الكلية! يرجى التأكد من الرقم أو مراجعة الأستاذ.`
-          );
-        }
-      }
-    }
-
-    // 4. Prevent duplicate student registration in the same lecture
-    const existing = await this.prisma.attendanceRecord.findFirst({
-      where: {
-        lectureId,
-        OR: [
-          { studentName: resolvedName },
-          ...(resolvedStudentId ? [{ studentId: resolvedStudentId }] : []),
-        ],
-      },
-    });
-
-    if (existing) {
-      throw new ConflictException(`تم تسجيل الطالب (${resolvedName}) مسبقاً في هذه المحاضرة!`);
-    }
-
-    // 5. Create attendance record with student link, device fingerprint, and IP
-    const record = await this.prisma.attendanceRecord.create({
-      data: {
-        lectureId,
-        studentId: resolvedStudentId,
-        studentCode: resolvedStudentCode,
-        studentName: resolvedName,
-        status: 'PRESENT',
-        deviceId: deviceId?.trim() || null,
-        ipAddress: ipAddress || null,
-        registeredAt: new Date(),
-      },
-    });
-
-    // 6. Emit real-time event to lecturer dashboard
-    this.gateway.emitAttendanceNew(lectureId, {
-      id: record.id,
-      studentName: record.studentName,
-      studentCode: record.studentCode,
-      status: record.status,
-      registeredAt: record.registeredAt.toISOString(),
-    });
-
-    this.logger.log(`Attendance registered: "${resolvedName}" (${resolvedStudentCode || 'No-ID'}) → lecture ${lectureId}`);
-
-    return {
-      success: true,
-      studentName: record.studentName,
-      studentCode: record.studentCode,
-      lectureName: validation.lectureName,
-      registeredAt: record.registeredAt.toISOString(),
+    const normalizePeriod = (value?: string | null) => {
+      const v = String(value || '').trim().toUpperCase();
+      if (!v) return '';
+      if (v === 'MORNING' || v.includes('صباح')) return 'MORNING';
+      if (v === 'EVENING' || v.includes('مسائ')) return 'EVENING';
+      return v;
     };
+    const periodLabel = (value: string) =>
+      value === 'MORNING' ? 'الصباحية' : value === 'EVENING' ? 'المسائية' : value;
+
+    if (lecture.course?.stage && student.stage !== lecture.course.stage) {
+      throw new BadRequestException(
+        `الطالب (${student.name}) من المرحلة ${student.stage}، بينما هذه المحاضرة للمرحلة ${lecture.course.stage}. لا يمكن تسجيل حضوره.`,
+      );
+    }
+
+    const lecturePeriod = normalizePeriod(lecture.studyPeriod);
+    const studentPeriod = normalizePeriod(student.studyPeriod);
+
+    if (lecturePeriod && studentPeriod && lecturePeriod !== studentPeriod) {
+      throw new BadRequestException(
+        `الطالب (${student.name}) من الدراسة ${periodLabel(studentPeriod)}، بينما هذه المحاضرة ${periodLabel(lecturePeriod)}. لا يمكن تسجيل حضوره.`,
+      );
+    }
+
+    const lectureSection = String(lecture.section || '').trim();
+    if (!lectureSection || lectureSection.toUpperCase() === 'ALL') {
+      return;
+    }
+
+    const allowedSections = lectureSection
+      .split(',')
+      .map((s) => normalizeSection(s))
+      .filter(Boolean);
+
+    if (allowedSections.length === 0) {
+      return;
+    }
+
+    // Prefer the stable section row over the legacy text mirror. A student who
+    // is linked through sectionId is always compared through that relation.
+    const studentSection = normalizeSection(
+      student.sectionRef?.name ?? student.section,
+    );
+
+    if (!studentSection) {
+      throw new BadRequestException(
+        `شعبة الطالب (${student.name}) غير محددة في قاعدة البيانات، ولا يمكن تسجيل حضوره في محاضرة مخصصة للشعبة (${allowedSections.join(' / ')}).`,
+      );
+    }
+
+    if (!allowedSections.includes(studentSection)) {
+      throw new BadRequestException(
+        `الطالب (${student.name}) من الشعبة (${studentSection})، بينما هذه المحاضرة مخصصة للشعبة (${allowedSections.join(' / ')}). لا يمكن تسجيل حضوره.`,
+      );
+    }
+  }
+
+  /**
+   * Closed (or archived) lectures are read-only for every role, including
+   * administrators. Rejected attempts are written to the audit trail.
+   */
+  private async assertLectureWritable(
+    lecture: { id: string; status: string },
+    actor: AuthenticatedUser,
+    operation: string,
+  ): Promise<void> {
+    if (lecture.status === 'ACTIVE') return;
+
+    await this.audit.log({
+      actorUserId: actor.id,
+      action: 'ATTENDANCE_WRITE_REJECTED',
+      entityType: 'Lecture',
+      entityId: lecture.id,
+      details: `${operation} rejected: lecture is ${lecture.status}`,
+    });
+
+    throw new BadRequestException(
+      'المحاضرة منتهية. لا يمكن تعديل سجلات الحضور في محاضرة مغلقة.',
+    );
   }
 
   /**
    * Get attendance list for a lecture
    */
-  async getByLecture(lectureId: string) {
+  async getByLecture(lectureId: string, actor: AuthenticatedUser) {
+    await this.lectureService.assertCanAccessLecture(actor, lectureId);
     return this.prisma.attendanceRecord.findMany({
       where: { lectureId },
       orderBy: { registeredAt: 'asc' },
@@ -145,7 +156,7 @@ export class AttendanceService {
   /**
    * Toggle a student's status between PRESENT and ABSENT
    */
-  async toggleStatus(recordId: string) {
+  async toggleStatus(recordId: string, actor: AuthenticatedUser) {
     const record = await this.prisma.attendanceRecord.findUnique({
       where: { id: recordId },
     });
@@ -154,6 +165,12 @@ export class AttendanceService {
       throw new BadRequestException('السجل غير موجود');
     }
 
+    const lecture = await this.lectureService.assertCanAccessLecture(
+      actor,
+      record.lectureId,
+    );
+    await this.assertLectureWritable(lecture, actor, 'ATTENDANCE_TOGGLE');
+
     const newStatus = record.status === 'PRESENT' ? 'ABSENT' : 'PRESENT';
 
     const updated = await this.prisma.attendanceRecord.update({
@@ -161,64 +178,106 @@ export class AttendanceService {
       data: { status: newStatus },
     });
 
+    if (record.studentId) {
+      await recomputeStudentStats(this.prisma, [record.studentId]);
+    }
+
+    await this.audit.log({
+      actorUserId: actor.id,
+      action: 'ATTENDANCE_TOGGLE',
+      entityType: 'AttendanceRecord',
+      entityId: recordId,
+      details: `${record.status} -> ${newStatus} in lecture ${record.lectureId}`,
+    });
+
     return updated;
   }
 
   /**
-   * Add a student manually (mark as absent or present)
+   * Add a student manually (mark as absent or present). The student must exist
+   * and is identified by row id; a display name is only accepted when it is
+   * unique, so two students with the same name can never be mixed up.
    */
-  async addManual(lectureId: string, studentIdentifier: string, status: string = 'ABSENT') {
+  async addManual(
+    lectureId: string,
+    studentIdentifier: string,
+    status: string,
+    actor: AuthenticatedUser,
+  ) {
+    const lecture = await this.lectureService.assertCanAccessLecture(actor, lectureId);
+    await this.assertLectureWritable(lecture, actor, 'ATTENDANCE_MANUAL');
+
     const inputClean = studentIdentifier.trim();
-
-    // Look up in student DB
-    let resolvedName = inputClean;
-    let resolvedStudentId: string | null = null;
-    let resolvedStudentCode: string | null = null;
-
-    const studentByCode = await this.prisma.student.findUnique({
-      where: { studentCode: inputClean },
-    });
-
-    if (studentByCode) {
-      resolvedName = studentByCode.name;
-      resolvedStudentId = studentByCode.id;
-      resolvedStudentCode = studentByCode.studentCode;
-    } else {
-      const studentByName = await this.prisma.student.findFirst({
-        where: { name: inputClean },
-      });
-      if (studentByName) {
-        resolvedName = studentByName.name;
-        resolvedStudentId = studentByName.id;
-        resolvedStudentCode = studentByName.studentCode;
-      }
+    if (!inputClean) {
+      throw new BadRequestException('اسم الطالب أو رقمه مطلوب');
     }
 
-    // Check duplicate
+    // Resolve by unique student code first.
+    let student = await this.prisma.student.findFirst({
+      where: { studentCode: inputClean, deletedAt: null },
+      include: { sectionRef: { select: { name: true } } },
+    });
+
+    if (!student) {
+      const matches = await this.prisma.student.findMany({
+        where: { name: inputClean, deletedAt: null },
+        take: 3,
+        include: { sectionRef: { select: { name: true } } },
+      });
+      if (matches.length > 1) {
+        throw new BadRequestException(
+          'يوجد أكثر من طالب بهذا الاسم. استخدم رقم الطالب (الباركود) لتحديد الطالب الصحيح.',
+        );
+      }
+      student = matches[0] || null;
+    }
+
+    if (!student) {
+      throw new BadRequestException(
+        'لم يتم العثور على الطالب في قاعدة البيانات. استخدم رقم الطالب أو أضفه أولاً.',
+      );
+    }
+
+    this.assertStudentBelongsToLecture(lecture, student);
+
+    // Identity is studentId. The studentCode branch only covers legacy rows
+    // created before the migration linked studentId.
     const existing = await this.prisma.attendanceRecord.findFirst({
       where: {
         lectureId,
         OR: [
-          { studentName: resolvedName },
-          ...(resolvedStudentId ? [{ studentId: resolvedStudentId }] : []),
+          { studentId: student.id },
+          { studentId: null, studentCode: student.studentCode },
         ],
       },
     });
 
     if (existing) {
-      throw new ConflictException(`الطالب (${resolvedName}) مسجل مسبقاً في قائمة هذه المحاضرة`);
+      throw new ConflictException(
+        `الطالب (${student.name}) مسجل مسبقاً في قائمة هذه المحاضرة`,
+      );
     }
 
-    const record = await this.prisma.attendanceRecord.create({
-      data: {
-        lectureId,
-        studentId: resolvedStudentId,
-        studentCode: resolvedStudentCode,
-        studentName: resolvedName,
-        status,
-        registeredAt: new Date(),
-      },
-    });
+    let record;
+    try {
+      record = await this.prisma.attendanceRecord.create({
+        data: {
+          lectureId,
+          studentId: student.id,
+          studentCode: student.studentCode,
+          studentName: student.name,
+          status,
+          registeredAt: new Date(),
+        },
+      });
+    } catch (error) {
+      if (isUniqueViolation(error)) {
+        throw new ConflictException(
+          `الطالب (${student.name}) مسجل مسبقاً في قائمة هذه المحاضرة`,
+        );
+      }
+      throw error;
+    }
 
     this.gateway.emitAttendanceNew(lectureId, {
       id: record.id,
@@ -228,22 +287,40 @@ export class AttendanceService {
       registeredAt: record.registeredAt.toISOString(),
     });
 
+    await this.audit.log({
+      actorUserId: actor.id,
+      action: 'ATTENDANCE_MANUAL',
+      entityType: 'AttendanceRecord',
+      entityId: record.id,
+      details: `${record.studentName} marked ${record.status} in lecture ${lectureId}`,
+    });
+
     return record;
   }
 
   /**
-   * Scan student QR via laptop camera - instantly registers attendance
+   * Scan student QR via laptop camera - instantly registers attendance.
+   *
+   * QR-only policy: the scanned value must be an active opaque StudentQrToken.
+   * studentCode and full name are deliberately rejected because they are
+   * guessable and would let anyone mark a student present without their card.
+   * Revoked tokens (including old cards after a rotation) are rejected too.
    */
-  async scanStudent(lectureId: string, studentIdentifier: string) {
-    const lecture = await this.prisma.lecture.findUnique({
-      where: { id: lectureId },
-    });
-
-    if (!lecture) {
-      throw new BadRequestException('المحاضرة غير موجودة');
-    }
+  async scanStudent(
+    lectureId: string,
+    studentIdentifier: string,
+    actor: AuthenticatedUser,
+  ) {
+    const lecture = await this.lectureService.assertCanAccessLecture(actor, lectureId);
 
     if (lecture.status !== 'ACTIVE') {
+      await this.audit.log({
+        actorUserId: actor.id,
+        action: 'ATTENDANCE_WRITE_REJECTED',
+        entityType: 'Lecture',
+        entityId: lectureId,
+        details: 'ATTENDANCE_SCAN rejected: lecture is not ACTIVE',
+      });
       throw new BadRequestException('المحاضرة منتهية وغير نشطة حالياً');
     }
 
@@ -252,36 +329,45 @@ export class AttendanceService {
       throw new BadRequestException('رمز الطالب غير صالح');
     }
 
-    // 1. Look up student in database by code or name
-    let student = await this.prisma.student.findUnique({
-      where: { studentCode: inputClean },
-    });
-
-    if (!student) {
-      student = await this.prisma.student.findFirst({
-        where: { name: inputClean },
-      });
-    }
-
-    let resolvedName = student ? student.name : inputClean;
-    let resolvedStudentId = student ? student.id : null;
-    let resolvedStudentCode = student ? student.studentCode : null;
-
-    // If students are registered in the DB, make sure student exists
-    const totalStudents = await this.prisma.student.count();
-    if (totalStudents > 0 && !student) {
+    if (!inputClean.startsWith('qr_')) {
       throw new BadRequestException(
-        `الرقم التعريفي (ID) "${inputClean}" غير مسجل في قاعدة بيانات الطلاب!`
+        'طريقة المسح غير صالحة: يجب استخدام بطاقة QR الخاصة بالطالب. لا يُسمح بتسجيل الحضور برقم الطالب أو الاسم.',
       );
     }
 
-    // 2. Check if already registered in this lecture
+    // Resolve through StudentQrToken only. A token that is unknown or revoked
+    // is rejected; there is no fallback to studentCode or name.
+    const qrToken = await this.prisma.studentQrToken.findFirst({
+      where: { token: inputClean, revokedAt: null },
+      include: {
+        student: { include: { sectionRef: { select: { name: true } } } },
+      },
+    });
+
+    if (!qrToken || !qrToken.student) {
+      throw new BadRequestException(
+        'بطاقة QR غير صالحة أو تم إلغاؤها. يرجى مراجعة المسجل لإصدار بطاقة جديدة.',
+      );
+    }
+
+    if (qrToken.student.deletedAt) {
+      throw new BadRequestException(
+        'بطاقة QR تخص طالباً محذوفاً من النظام. يرجى مراجعة المسجل.',
+      );
+    }
+
+    const student = qrToken.student;
+
+    // Make sure the student belongs to this lecture's study period & section
+    this.assertStudentBelongsToLecture(lecture, student);
+
+    // Identity is studentId, never the display name.
     const existing = await this.prisma.attendanceRecord.findFirst({
       where: {
         lectureId,
         OR: [
-          { studentName: resolvedName },
-          ...(resolvedStudentId ? [{ studentId: resolvedStudentId }] : []),
+          { studentId: student.id },
+          { studentId: null, studentCode: student.studentCode },
         ],
       },
     });
@@ -291,7 +377,12 @@ export class AttendanceService {
       if (existing.status === 'ABSENT') {
         const updated = await this.prisma.attendanceRecord.update({
           where: { id: existing.id },
-          data: { status: 'PRESENT', registeredAt: new Date() },
+          data: {
+            status: 'PRESENT',
+            studentId: student.id,
+            studentCode: student.studentCode,
+            registeredAt: new Date(),
+          },
         });
 
         this.gateway.emitAttendanceNew(lectureId, {
@@ -302,6 +393,14 @@ export class AttendanceService {
           registeredAt: updated.registeredAt.toISOString(),
         });
 
+        await this.audit.log({
+          actorUserId: actor.id,
+          action: 'ATTENDANCE_SCAN',
+          entityType: 'AttendanceRecord',
+          entityId: updated.id,
+          details: `switched ABSENT->PRESENT for ${student.studentCode} in lecture ${lectureId}`,
+        });
+
         return {
           success: true,
           alreadyRegistered: false,
@@ -309,7 +408,7 @@ export class AttendanceService {
           record: updated,
           studentName: updated.studentName,
           studentCode: updated.studentCode,
-          message: `تم تحويل الطالب (${resolvedName}) من غائب إلى حاضر بنجاح!`,
+          message: `تم تحويل الطالب (${student.name}) من غائب إلى حاضر بنجاح!`,
         };
       }
 
@@ -319,21 +418,31 @@ export class AttendanceService {
         record: existing,
         studentName: existing.studentName,
         studentCode: existing.studentCode,
-        message: `الطالب (${resolvedName}) مسجل حضور مسبقاً!`,
+        message: `الطالب (${student.name}) مسجل حضور مسبقاً!`,
       };
     }
 
-    // 3. Create attendance record
-    const record = await this.prisma.attendanceRecord.create({
-      data: {
-        lectureId,
-        studentId: resolvedStudentId,
-        studentCode: resolvedStudentCode,
-        studentName: resolvedName,
-        status: 'PRESENT',
-        registeredAt: new Date(),
-      },
-    });
+    // Create attendance record
+    let record;
+    try {
+      record = await this.prisma.attendanceRecord.create({
+        data: {
+          lectureId,
+          studentId: student.id,
+          studentCode: student.studentCode,
+          studentName: student.name,
+          status: 'PRESENT',
+          registeredAt: new Date(),
+        },
+      });
+    } catch (error) {
+      if (isUniqueViolation(error)) {
+        throw new ConflictException(
+          `الطالب (${student.name}) سُجل حضوره للتو في هذه المحاضرة. حدّث القائمة.`,
+        );
+      }
+      throw error;
+    }
 
     this.gateway.emitAttendanceNew(lectureId, {
       id: record.id,
@@ -343,7 +452,17 @@ export class AttendanceService {
       registeredAt: record.registeredAt.toISOString(),
     });
 
-    this.logger.log(`Camera Scanned Attendance: "${resolvedName}" (${resolvedStudentCode || 'No-ID'}) → lecture ${lectureId}`);
+    await this.audit.log({
+      actorUserId: actor.id,
+      action: 'ATTENDANCE_SCAN',
+      entityType: 'AttendanceRecord',
+      entityId: record.id,
+      details: `${student.studentCode} attended lecture ${lectureId}`,
+    });
+
+    this.logger.log(
+      `Camera Scanned Attendance: "${student.studentCode}" → lecture ${lectureId}`,
+    );
 
     return {
       success: true,
@@ -351,7 +470,7 @@ export class AttendanceService {
       record,
       studentName: record.studentName,
       studentCode: record.studentCode,
-      message: `تم تسجيل حضور الطالب (${resolvedName}) بنجاح!`,
+      message: `تم تسجيل حضور الطالب (${student.name}) بنجاح!`,
     };
   }
 }

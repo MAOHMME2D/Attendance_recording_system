@@ -12,15 +12,14 @@
     "build": "pnpm -r run build",
     "db:generate": "pnpm --filter @attendance/api run db:generate",
     "db:push": "pnpm --filter @attendance/api run db:push",
-    "db:seed": "pnpm --filter @attendance/api run db:seed",
     "db:studio": "pnpm --filter @attendance/api run db:studio",
     "db:migrate": "pnpm --filter @attendance/api run db:migrate",
-    "setup": "pnpm install && pnpm db:generate && pnpm db:push && pnpm db:seed"
+    "db:migrate:deploy": "pnpm --filter @attendance/api run db:migrate:postgres",
+    "backup:postgres": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/backup/backup-postgres.ps1",
+    "restore:test": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/backup/restore-postgres-test.ps1",
+    "setup": "pnpm install && pnpm db:generate && pnpm db:migrate:deploy"
   },
   "engines": {
     "node": ">=18.0.0"
-  },
-  "devDependencies": {
-    "has-flag": "^4.0.0"
   }
 }
