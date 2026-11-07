@@ -99,6 +99,31 @@ export const STUDY_PERIODS = [
   { value: 'EVENING', label: 'دراسة مسائية' },
 ];
 
+// ============ Academic stages ============
+export type AcademicStage = 1 | 2 | 3 | 4;
+
+export const ACADEMIC_STAGES: AcademicStage[] = [1, 2, 3, 4];
+
+export const STAGE_LABELS: Record<AcademicStage, string> = {
+  1: 'المرحلة الأولى',
+  2: 'المرحلة الثانية',
+  3: 'المرحلة الثالثة',
+  4: 'المرحلة الرابعة',
+};
+
+export const STAGE_OPTIONS = ACADEMIC_STAGES.map((stage) => ({
+  value: stage,
+  label: STAGE_LABELS[stage],
+}));
+
+/** Safely read a stage label for a value coming from the API. */
+export function stageLabel(stage?: number | null): string {
+  if (stage === 1 || stage === 2 || stage === 3 || stage === 4) {
+    return STAGE_LABELS[stage];
+  }
+  return '-';
+}
+
 export const MORNING_SECTIONS = [
   { value: '1', label: 'الشعبة الأولى' },
   { value: '2', label: 'الشعبة الثانية' },
@@ -123,7 +148,9 @@ export function getSectionsForPeriod(period: string) {
 export function formatSectionLabel(section?: string | null): string {
   if (!section) return '-';
   const clean = section.trim();
-  const num = clean.replace(/[^0-9]/g, '');
+  // Only purely numeric names map to "الشعبة الأولى..." etc. A custom name such
+  // as "A1" must be shown as-is instead of being reduced to its digits.
+  const num = /^[0-9]+$/.test(clean) ? clean : '';
   const sectionMap: Record<string, string> = {
     '1': 'الشعبة الأولى',
     '2': 'الشعبة الثانية',
@@ -221,11 +248,30 @@ export const staffApi = {
 };
 
 // ============ Lectures ============
+export interface LectureCourse {
+  id: string;
+  code: string;
+  name: string;
+  stage: number;
+}
+
 export const lectureApi = {
-  create: (name: string, studyPeriod?: string, section?: string) =>
+  create: (
+    name: string,
+    studyPeriod?: string,
+    section?: string,
+    courseId?: string,
+    sectionId?: string,
+  ) =>
     apiFetch<any>('/lectures', {
       method: 'POST',
-      body: JSON.stringify({ name, studyPeriod: studyPeriod || 'MORNING', section }),
+      body: JSON.stringify({
+        name,
+        studyPeriod: studyPeriod || 'MORNING',
+        section,
+        ...(courseId ? { courseId } : {}),
+        ...(sectionId ? { sectionId } : {}),
+      }),
     }),
 
   get: (id: string) =>
@@ -276,6 +322,7 @@ export interface StudentHistoryItem {
   attendanceId: string;
   lectureId: string;
   lectureName: string;
+  courseId?: string | null;
   lectureDate: string;
   status: string;
   registeredAt: string;
@@ -287,8 +334,11 @@ export interface StudentListItem {
   orderIndex: number;
   studentCode: string;
   name: string;
+  stage: number;
   studyPeriod?: string;
   section?: string;
+  sectionId?: string | null;
+  sectionLabel?: string | null;
   presentCount: number;
   absentCount: number;
   totalLectures: number;
@@ -301,25 +351,106 @@ export interface StudentOption {
   id: string;
   name: string;
   studentCode: string;
+  stage?: number;
   studyPeriod?: string;
   section?: string;
+  sectionId?: string | null;
+  sectionLabel?: string | null;
   orderIndex?: number;
 }
 
+export interface StudentFilters {
+  studyPeriod?: string;
+  section?: string;
+  stage?: number | string;
+  sectionId?: string;
+}
+
+export interface StudentWriteInput {
+  studentCode?: string;
+  name: string;
+  stage?: number;
+  studyPeriod?: string;
+  section?: string;
+  sectionId?: string | null;
+  orderIndex?: number;
+  presentCount?: number;
+  absentCount?: number;
+  totalSessions?: number;
+  rate?: number;
+}
+
+export interface ImportRow {
+  studentCode?: string;
+  name: string;
+  stage?: number;
+  studyPeriod?: string;
+  section?: string;
+  sectionId?: string;
+  orderIndex?: number;
+}
+
+export interface ImportRowResult {
+  row: number;
+  studentCode: string;
+  name: string;
+  stage: number;
+  studyPeriod: string;
+  section: string | null;
+  sectionId: string | null;
+  status: 'VALID' | 'ERROR';
+  errors: string[];
+}
+
+export interface ImportPreviewResult {
+  summary: { total: number; valid: number; invalid: number };
+  rows: ImportRowResult[];
+}
+
+export interface ImportConfirmResult {
+  success: boolean;
+  created: number;
+  rejected: number;
+  skipped: number;
+  updated: number;
+  count: number;
+  errors: string[];
+}
+
+export interface ImportRequest {
+  stage?: number;
+  studyPeriod?: string;
+  section?: string;
+  sectionId?: string;
+  students: ImportRow[];
+}
+
+function studentQuery(filters: StudentFilters = {}): string {
+  const params = new URLSearchParams();
+  if (filters.studyPeriod) params.append('studyPeriod', filters.studyPeriod);
+  if (filters.section) params.append('section', filters.section);
+  if (filters.sectionId) params.append('sectionId', filters.sectionId);
+  if (filters.stage !== undefined && filters.stage !== '') {
+    params.append('stage', String(filters.stage));
+  }
+  const query = params.toString();
+  return query ? `?${query}` : '';
+}
+
 export const studentApi = {
-  getAll: (studyPeriod?: string, section?: string) => {
-    const params = new URLSearchParams();
-    if (studyPeriod) params.append('studyPeriod', studyPeriod);
-    if (section) params.append('section', section);
-    const query = params.toString();
-    return apiFetch<StudentListItem[]>(`/students${query ? `?${query}` : ''}`);
-  },
+  getAll: (filters: StudentFilters = {}) =>
+    apiFetch<StudentListItem[]>(`/students${studentQuery(filters)}`),
 
   /** Minimal list (no QR credentials) used by lecturers for manual attendance. */
-  getOptions: (studyPeriod?: string, section?: string) => {
+  getOptions: (filters: StudentFilters & { courseId?: string } = {}) => {
     const params = new URLSearchParams();
-    if (studyPeriod) params.append('studyPeriod', studyPeriod);
-    if (section) params.append('section', section);
+    if (filters.studyPeriod) params.append('studyPeriod', filters.studyPeriod);
+    if (filters.section) params.append('section', filters.section);
+    if (filters.sectionId) params.append('sectionId', filters.sectionId);
+    if (filters.courseId) params.append('courseId', filters.courseId);
+    if (filters.stage !== undefined && filters.stage !== '') {
+      params.append('stage', String(filters.stage));
+    }
     const query = params.toString();
     return apiFetch<StudentOption[]>(`/students/options${query ? `?${query}` : ''}`);
   },
@@ -338,19 +469,44 @@ export const studentApi = {
       { method: 'POST' },
     ),
 
-  create: (data: { studentCode: string; name: string; studyPeriod?: string; section?: string; orderIndex?: number; presentCount?: number; absentCount?: number; totalSessions?: number; rate?: number }) =>
+  create: (data: StudentWriteInput) =>
     apiFetch<any>('/students', {
       method: 'POST',
       body: JSON.stringify(data),
     }),
 
-  createBatch: (students: { studentCode: string; name: string; studyPeriod?: string; section?: string; orderIndex?: number; presentCount?: number; absentCount?: number; totalSessions?: number; rate?: number }[]) =>
+  createBatch: (students: StudentWriteInput[]) =>
     apiFetch<any>('/students/batch', {
       method: 'POST',
       body: JSON.stringify({ students }),
     }),
 
-  update: (id: string, data: { studentCode?: string; name?: string; studyPeriod?: string; section?: string }) =>
+  /** Validate an import and return per-row errors without writing anything. */
+  previewImport: (data: ImportRequest) =>
+    apiFetch<ImportPreviewResult>('/students/import/preview', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  /** Write only the valid rows; existing/duplicate students are rejected. */
+  confirmImport: (data: ImportRequest) =>
+    apiFetch<ImportConfirmResult>('/students/import/confirm', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  update: (
+    id: string,
+    data: {
+      studentCode?: string;
+      name?: string;
+      stage?: number;
+      studyPeriod?: string;
+      section?: string;
+      sectionId?: string | null;
+      orderIndex?: number;
+    },
+  ) =>
     apiFetch<any>(`/students/${id}`, {
       method: 'PUT',
       body: JSON.stringify(data),
@@ -360,8 +516,10 @@ export const studentApi = {
     apiFetch<any>(`/students/${id}`, { method: 'DELETE' }),
 
   resetAbsences: (data: {
+    stage?: number;
     studyPeriod?: string;
     section?: string;
+    sectionId?: string;
     studentId?: string;
     resetType?: 'ABSENCES_ONLY' | 'ALL_ATTENDANCE';
   }) =>
@@ -374,21 +532,42 @@ export const studentApi = {
 // ============ Sections ============
 export interface SectionItem {
   id: string;
+  stage: AcademicStage;
   studyPeriod: 'MORNING' | 'EVENING';
   name: string;
   label?: string | null;
+  studentCount?: number;
   createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface SectionInput {
+  stage?: number;
+  studyPeriod: string;
+  name: string;
+  label?: string;
 }
 
 export const sectionApi = {
-  getAll: (studyPeriod?: string) => {
-    const q = studyPeriod ? `?studyPeriod=${studyPeriod}` : '';
-    return apiFetch<SectionItem[]>(`/sections${q}`);
+  getAll: (filters: { stage?: number | string; studyPeriod?: string } = {}) => {
+    const params = new URLSearchParams();
+    if (filters.stage !== undefined && filters.stage !== '') {
+      params.append('stage', String(filters.stage));
+    }
+    if (filters.studyPeriod) params.append('studyPeriod', filters.studyPeriod);
+    const query = params.toString();
+    return apiFetch<SectionItem[]>(`/sections${query ? `?${query}` : ''}`);
   },
 
-  create: (data: { studyPeriod: string; name: string; label?: string }) =>
+  create: (data: SectionInput) =>
     apiFetch<SectionItem>('/sections', {
       method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  update: (id: string, data: Partial<SectionInput>) =>
+    apiFetch<SectionItem>(`/sections/${id}`, {
+      method: 'PUT',
       body: JSON.stringify(data),
     }),
 
@@ -397,3 +576,219 @@ export const sectionApi = {
       method: 'DELETE',
     }),
 };
+
+// ============ Courses ============
+export interface CourseItem {
+  id: string;
+  code: string;
+  name: string;
+  stage: number;
+  description?: string | null;
+  createdAt?: string;
+  updatedAt?: string;
+  _count?: { lectures: number; assignments: number };
+}
+
+export interface CourseInput {
+  code: string;
+  name: string;
+  stage: number;
+  description?: string;
+}
+
+export const courseApi = {
+  getAll: (stage?: number | string) => {
+    const q =
+      stage !== undefined && stage !== '' ? `?stage=${encodeURIComponent(String(stage))}` : '';
+    return apiFetch<CourseItem[]>(`/courses${q}`);
+  },
+
+  create: (data: CourseInput) =>
+    apiFetch<CourseItem>('/courses', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  update: (id: string, data: Partial<CourseInput>) =>
+    apiFetch<CourseItem>(`/courses/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+
+  delete: (id: string) =>
+    apiFetch<{ success: boolean }>(`/courses/${id}`, { method: 'DELETE' }),
+};
+
+// ============ Teaching assignments ============
+export interface AssignmentItem {
+  id: string;
+  staffUserId: string;
+  courseId: string;
+  createdAt: string;
+  staffUser: {
+    id: string;
+    staffId: string;
+    fullName: string;
+    role: StaffRole;
+    isActive: boolean;
+  };
+  course: { id: string; code: string; name: string; stage: number };
+}
+
+export const assignmentApi = {
+  getAll: (filters: { staffUserId?: string; courseId?: string } = {}) => {
+    const params = new URLSearchParams();
+    if (filters.staffUserId) params.append('staffUserId', filters.staffUserId);
+    if (filters.courseId) params.append('courseId', filters.courseId);
+    const q = params.toString();
+    return apiFetch<AssignmentItem[]>(`/assignments${q ? `?${q}` : ''}`);
+  },
+
+  create: (data: { staffUserId: string; courseId: string }) =>
+    apiFetch<AssignmentItem>('/assignments', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  delete: (id: string) =>
+    apiFetch<{ success: boolean }>(`/assignments/${id}`, { method: 'DELETE' }),
+};
+
+// ============ Read-only student follow-up ============
+export interface FollowupCourse {
+  id: string;
+  code: string;
+  name: string;
+  stage: number;
+}
+
+export interface FollowupSectionScope {
+  id: string;
+  name: string;
+  stage: number;
+  studyPeriod: string;
+}
+
+export interface FollowupScope {
+  courseIds: string[];
+  stages: number[];
+  section: FollowupSectionScope | null;
+}
+
+export interface FollowupOverview {
+  courses: FollowupCourse[];
+  scope?: FollowupScope;
+  totals: {
+    students: number;
+    lectures: number;
+    closedLectures: number;
+    activeLectures: number;
+    present: number;
+    absent: number;
+    attendanceCases: number;
+    attendanceRate: number;
+    absenceRate: number;
+  };
+}
+
+export interface FollowupStudentRow {
+  id: string;
+  studentCode: string;
+  name: string;
+  stage: number;
+  studyPeriod: string;
+  section: string | null;
+  sectionId: string | null;
+  sectionLabel: string | null;
+  presentCount: number;
+  absentCount: number;
+  totalLectures: number;
+  attendanceRate: number;
+  absenceRate: number;
+}
+
+export interface FollowupStudentsPage {
+  courses: FollowupCourse[];
+  scope?: FollowupScope;
+  items: FollowupStudentRow[];
+  pagination: {
+    page: number;
+    pageSize: number;
+    total: number;
+    totalPages: number;
+  };
+}
+
+export interface FollowupStudentDetail {
+  student: {
+    id: string;
+    studentCode: string;
+    name: string;
+    stage: number;
+    studyPeriod: string;
+    section: string | null;
+    sectionId: string | null;
+    sectionLabel: string | null;
+  };
+  stats: {
+    present: number;
+    absent: number;
+    totalLectures: number;
+    attendanceRate: number;
+    absenceRate: number;
+    excludedActiveLectures: number;
+  };
+  lectures: Array<{
+    attendanceId: string;
+    lectureId: string;
+    lectureName: string;
+    lectureDate: string;
+    closedAt: string | null;
+    courseId: string | null;
+    courseCode: string | null;
+    courseName: string | null;
+    status: string;
+  }>;
+}
+
+export interface FollowupFilters {
+  courseId?: string;
+  sectionId?: string;
+  stage?: number | string;
+  search?: string;
+  sort?: string;
+  page?: number;
+  pageSize?: number;
+}
+
+function followupQuery(filters: FollowupFilters = {}): string {
+  const params = new URLSearchParams();
+  if (filters.courseId) params.append('courseId', filters.courseId);
+  if (filters.sectionId) params.append('sectionId', filters.sectionId);
+  if (filters.stage !== undefined && filters.stage !== '') {
+    params.append('stage', String(filters.stage));
+  }
+  if (filters.search) params.append('search', filters.search);
+  if (filters.sort) params.append('sort', filters.sort);
+  if (filters.page) params.append('page', String(filters.page));
+  if (filters.pageSize) params.append('pageSize', String(filters.pageSize));
+  const q = params.toString();
+  return q ? `?${q}` : '';
+}
+
+export const followupApi = {
+  overview: (filters: FollowupFilters = {}) =>
+    apiFetch<FollowupOverview>(`/followup/overview${followupQuery(filters)}`),
+
+  students: (filters: FollowupFilters = {}) =>
+    apiFetch<FollowupStudentsPage>(`/followup/students${followupQuery(filters)}`),
+
+  studentDetail: (
+    studentId: string,
+    filters: { courseId?: string; sectionId?: string; stage?: number | string } = {},
+  ) =>
+    apiFetch<FollowupStudentDetail>(
+      `/followup/students/${encodeURIComponent(studentId)}${followupQuery(filters)}`,
+    ),
+};
+

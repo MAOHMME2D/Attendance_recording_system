@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { lectureApi } from '../../lib/api';
+import { lectureApi, stageLabel } from '../../lib/api';
 import Link from 'next/link';
 import * as XLSX from 'xlsx';
 import Navbar from '../../components/layout/Navbar';
@@ -27,6 +27,7 @@ interface Lecture {
   startedAt: string;
   closedAt: string | null;
   createdAt: string;
+  course?: { id: string; code: string; name: string; stage: number } | null;
   attendances: AttendanceRecord[];
   _count: { attendances: number };
 }
@@ -74,9 +75,15 @@ export default function ReportsPage() {
     }
   };
 
-  const filteredLectures = lectures.filter(l =>
-    l.name.toLowerCase().includes(searchTerm.toLowerCase())
-  );
+  const filteredLectures = lectures.filter((l) => {
+    const term = searchTerm.trim().toLowerCase();
+    if (!term) return true;
+    return (
+      l.name.toLowerCase().includes(term) ||
+      (l.course?.name || '').toLowerCase().includes(term) ||
+      (l.course?.code || '').toLowerCase().includes(term)
+    );
+  });
 
   const getStats = (lecture: Lecture) => {
     const present = lecture.attendances.filter(a => a.status === 'PRESENT').length;
@@ -101,6 +108,8 @@ export default function ReportsPage() {
       return {
         'ت': index + 1,
         'اسم المحاضرة': lecture.name,
+        'المرحلة': lecture.course ? stageLabel(lecture.course.stage) : '-',
+        'المادة': lecture.course ? `${lecture.course.code} — ${lecture.course.name}` : '-',
         'الدراسة': (lecture.studyPeriod || 'MORNING') === 'EVENING' ? 'مسائي' : 'صباحي',
         'الشعبة': lecture.section && lecture.section !== 'ALL' ? `شعبة ${lecture.section}` : 'الكل',
         'الحالة': lecture.status === 'ACTIVE' ? 'جارية' : 'منتهية',
@@ -117,6 +126,8 @@ export default function ReportsPage() {
     const worksheet = XLSX.utils.json_to_sheet(exportData);
     worksheet['!cols'] = [
       { wch: 6 },
+      { wch: 30 },
+      { wch: 14 },
       { wch: 30 },
       { wch: 10 },
       { wch: 12 },
@@ -325,7 +336,7 @@ export default function ReportsPage() {
             )}
           </div>
         ) : (
-          <div style={{ display: 'grid', gridTemplateColumns: selectedLecture ? '1fr 1fr' : '1fr', gap: '24px' }}>
+          <div className="reports-grid" style={{ display: 'grid', gridTemplateColumns: selectedLecture ? '1fr 1fr' : '1fr', gap: '24px' }}>
             {/* Lecture List */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
               {filteredLectures.map((lecture, index) => {
@@ -353,6 +364,25 @@ export default function ReportsPage() {
                           {lecture.name}
                         </h3>
                         <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+                          {lecture.course && (
+                            <span
+                              style={{
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: '4px',
+                                padding: '3px 10px',
+                                borderRadius: '6px',
+                                fontSize: '11px',
+                                fontWeight: '700',
+                                background: '#FEF3C7',
+                                color: '#92400E',
+                                border: '1px solid #FCD34D',
+                              }}
+                              title={lecture.course.name}
+                            >
+                              {stageLabel(lecture.course.stage)} · {lecture.course.code}
+                            </span>
+                          )}
                           <span
                             style={{
                               display: 'inline-flex',
@@ -453,7 +483,7 @@ export default function ReportsPage() {
 
             {/* Attendance Details Panel */}
             {selectedLecture && (
-              <div className="glass-card animate-slide-up glow-border" style={{ padding: '24px', position: 'sticky', top: '80px', maxHeight: 'calc(100vh - 120px)', overflowY: 'auto' }}>
+              <div className="glass-card animate-slide-up glow-border reports-detail" style={{ padding: '24px', position: 'sticky', top: '80px', maxHeight: 'calc(100vh - 120px)', overflowY: 'auto' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '20px', flexWrap: 'wrap', gap: '10px' }}>
                   <div>
                     <h2 style={{ fontSize: '22px', fontWeight: '700', marginBottom: '6px', color: '#111827' }}>
@@ -461,6 +491,18 @@ export default function ReportsPage() {
                     </h2>
                     <p style={{ color: 'var(--text-muted)', fontSize: '13.5px', margin: 0 }}>
                       {formatAttendanceDate(selectedLecture.startedAt, true)}
+                    </p>
+                    {selectedLecture.course && (
+                      <p style={{ color: '#92400E', fontSize: '12.5px', marginTop: '4px', fontWeight: '700' }}>
+                        {stageLabel(selectedLecture.course.stage)} · {selectedLecture.course.code} —{' '}
+                        {selectedLecture.course.name}
+                      </p>
+                    )}
+                    <p style={{ color: 'var(--text-muted)', fontSize: '12.5px', marginTop: '2px' }}>
+                      {selectedLecture.section && selectedLecture.section !== 'ALL'
+                        ? `الشُعب: ${selectedLecture.section}`
+                        : 'كافة الشُعب'}{' '}
+                      · {selectedLecture.studyPeriod === 'EVENING' ? 'مسائي' : 'صباحي'}
                     </p>
                   </div>
 
@@ -507,7 +549,8 @@ export default function ReportsPage() {
                     <p style={{ color: 'var(--text-muted)' }}>لا توجد سجلات حضور</p>
                   </div>
                 ) : (
-                  <table className="attendance-table">
+                  <div style={{ overflowX: 'auto' }}>
+                    <table className="attendance-table">
                     <thead>
                       <tr>
                         <th>#</th>
@@ -551,7 +594,8 @@ export default function ReportsPage() {
                         </tr>
                       ))}
                     </tbody>
-                  </table>
+                    </table>
+                  </div>
                 )}
               </div>
             )}
@@ -675,6 +719,18 @@ export default function ReportsPage() {
           }))}
         />
       )}
+
+      <style jsx>{`
+        @media (max-width: 900px) {
+          .reports-grid {
+            grid-template-columns: minmax(0, 1fr) !important;
+          }
+          .reports-detail {
+            position: static !important;
+            max-height: none !important;
+          }
+        }
+      `}</style>
     </div>
   );
 }

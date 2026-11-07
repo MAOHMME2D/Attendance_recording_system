@@ -41,7 +41,9 @@ export class LectureController {
       body.name,
       body.studyPeriod,
       body.section,
+      body.courseId,
       user,
+      body.sectionId,
     );
   }
 
@@ -52,9 +54,9 @@ export class LectureController {
     return this.lectureService.getActiveLecture(user);
   }
 
-  /** Get all lectures visible to the actor (reports). */
+  /** Get all lectures visible to the actor (scoped for lecturers/technicians). */
   @Get()
-  @RequirePermissions(PERMISSIONS.REPORTS_VIEW)
+  @RequirePermissions(PERMISSIONS.LECTURE_CONDUCT)
   async getAllLectures(@CurrentUser() user: AuthenticatedUser) {
     return this.lectureService.getAllLectures(user);
   }

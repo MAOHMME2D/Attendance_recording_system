@@ -36,7 +36,13 @@ export interface LoginResult {
 const DEFAULT_MAX_FAILED_ATTEMPTS = 5;
 const DEFAULT_LOCK_MINUTES = 15;
 const DEFAULT_LOGIN_WINDOW_MINUTES = 5;
-const DEFAULT_MAX_LOGIN_ATTEMPTS_PER_WINDOW = 10;
+/**
+ * Per-IP failure ceiling is intentionally high: a whole campus can share one
+ * NAT address, so a low number would lock everybody out. Per account+IP stays
+ * strict, and the per-account lockout below is the real guessing barrier.
+ */
+const DEFAULT_MAX_FAILED_ATTEMPTS_PER_IP = 200;
+const DEFAULT_MAX_FAILED_ATTEMPTS_PER_ACCOUNT_IP = 10;
 
 /** Valid bcrypt hash used only to equalise timing for unknown staff ids. */
 const DUMMY_HASH = '$2b$12$1kzq22NnRk9BhY4T3Ps8f.Oow0SnmqmyQnoL47dWCmklWNF6YcwFO';
@@ -110,32 +116,93 @@ export class AuthService {
     return minutes * 60 * 1000;
   }
 
-  private maxLoginAttemptsPerWindow(): number {
+  private maxFailedAttemptsPerIp(): number {
     return readPositiveInt(
-      'AUTH_LOGIN_MAX_ATTEMPTS',
-      DEFAULT_MAX_LOGIN_ATTEMPTS_PER_WINDOW,
+      'AUTH_IP_MAX_FAILED_ATTEMPTS',
+      DEFAULT_MAX_FAILED_ATTEMPTS_PER_IP,
+      100000,
+    );
+  }
+
+  private maxFailedAttemptsPerAccountIp(): number {
+    return readPositiveInt(
+      'AUTH_ACCOUNT_IP_MAX_FAILED_ATTEMPTS',
+      DEFAULT_MAX_FAILED_ATTEMPTS_PER_ACCOUNT_IP,
       10000,
     );
   }
 
-  private assertLoginRateLimit(ipAddress: string): void {
+  /**
+   * Reads the current failure bucket without incrementing it. Successful
+   * logins therefore never consume the failure budget.
+   */
+  private retryAfterSeconds(key: string, limit: number): number | null {
     const now = Date.now();
-    const key = ipAddress || 'unknown';
     const bucket = this.loginAttempts.get(key);
+    if (!bucket) return null;
+    if (bucket.resetAt <= now) {
+      this.loginAttempts.delete(key);
+      return null;
+    }
+    if (bucket.count < limit) return null;
+    return Math.max(1, Math.ceil((bucket.resetAt - now) / 1000));
+  }
 
+  /** Counts one failed attempt for a key. Only failures call this. */
+  private recordFailure(key: string): void {
+    const now = Date.now();
+    const bucket = this.loginAttempts.get(key);
     if (!bucket || bucket.resetAt <= now) {
-      this.loginAttempts.set(key, { count: 1, resetAt: now + this.loginWindowMs() });
+      this.loginAttempts.set(key, {
+        count: 1,
+        resetAt: now + this.loginWindowMs(),
+      });
       return;
     }
-
     bucket.count += 1;
-    if (bucket.count > this.maxLoginAttemptsPerWindow()) {
-      const retryAfter = Math.max(1, Math.ceil((bucket.resetAt - now) / 1000));
+  }
+
+  private clearFailures(key: string): void {
+    this.loginAttempts.delete(key);
+  }
+
+  /**
+   * Rejects only requests that already exhausted their failure budget. It must
+   * be called before credential verification and must not increment counters;
+   * the counters are updated on failure in `recordLoginFailure`.
+   */
+  private assertLoginRateLimit(ipAddress: string, staffId: string): {
+    ipKey: string;
+    accountKey: string;
+  } {
+    const ipKey = `ip:${ipAddress || 'unknown'}`;
+    const accountKey = `acct:${staffId}:${ipAddress || 'unknown'}`;
+
+    const ipWait = this.retryAfterSeconds(ipKey, this.maxFailedAttemptsPerIp());
+    if (ipWait !== null) {
       throw new HttpException(
-        `محاولات دخول كثيرة. يرجى المحاولة بعد ${retryAfter} ثانية`,
+        `محاولات دخول كثيرة. يرجى المحاولة بعد ${ipWait} ثانية`,
         HttpStatus.TOO_MANY_REQUESTS,
       );
     }
+
+    const accountWait = this.retryAfterSeconds(
+      accountKey,
+      this.maxFailedAttemptsPerAccountIp(),
+    );
+    if (accountWait !== null) {
+      throw new HttpException(
+        `محاولات دخول كثيرة لهذا الحساب. يرجى المحاولة بعد ${accountWait} ثانية`,
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
+    }
+
+    return { ipKey, accountKey };
+  }
+
+  private recordLoginFailure(ipKey: string, accountKey: string): void {
+    this.recordFailure(ipKey);
+    this.recordFailure(accountKey);
   }
 
   /**
@@ -147,9 +214,10 @@ export class AuthService {
     ipAddress: string,
     userAgent?: string,
   ): Promise<LoginResult> {
-    this.assertLoginRateLimit(ipAddress);
-
     const staffId = dto.staffId.trim().toLowerCase();
+    // Check the failure budget before doing any work; do not increment it here.
+    const { ipKey, accountKey } = this.assertLoginRateLimit(ipAddress, staffId);
+
     const user = await this.prisma.staffUser.findUnique({ where: { staffId } });
 
     // Always run a bcrypt comparison so unknown accounts take a similar time.
@@ -159,6 +227,8 @@ export class AuthService {
     );
 
     if (!user || !passwordMatches) {
+      // Only failed attempts consume the rate-limit budget.
+      this.recordLoginFailure(ipKey, accountKey);
       if (user) {
         const failedLoginCount = user.failedLoginCount + 1;
         const lockedUntil =
@@ -213,6 +283,11 @@ export class AuthService {
         HttpStatus.TOO_MANY_REQUESTS,
       );
     }
+
+    // Credentials are valid: reset the per-account/IP failure budget. The IP
+    // budget is intentionally not reset so a known-good login cannot be used
+    // to clear an attacker's failures.
+    this.clearFailures(accountKey);
 
     const rawToken = this.newToken();
     const expiresAt = new Date(Date.now() + this.sessionTtlMs());

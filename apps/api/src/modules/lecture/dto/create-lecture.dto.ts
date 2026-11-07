@@ -14,4 +14,15 @@ export class CreateLectureDto {
   @IsString()
   @MaxLength(120)
   section?: string;
+
+  /** Stable section reference; preferred over the free-text `section`. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  sectionId?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  courseId?: string;
 }

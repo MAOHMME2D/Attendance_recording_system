@@ -53,6 +53,8 @@ const tokens: Partial<Record<StaffKey, string>> = {};
 const userIds: Partial<Record<StaffKey, string>> = {};
 let rotatedQr = '';
 const ids = {
+  sectionOne: '',
+  courseStage2: '',
   lectureMine: '',
   lectureOther: '',
   lectureTech: '',
@@ -216,12 +218,33 @@ before(async () => {
     userIds[key] = created.id;
   }
 
+  // Phase 2 academic structure: one stage-2 section and course. Lecturer A and
+  // technical lecturer A are assigned to it; the admin roles need no assignment.
+  const sectionOne = await prisma.section.create({
+    data: { stage: 2, studyPeriod: 'MORNING', name: '1', label: 'الشعبة الأولى' },
+  });
+  ids.sectionOne = sectionOne.id;
+
+  const courseStage2 = await prisma.course.create({
+    data: { code: 'CS201', name: 'مادة اختبار', stage: 2 },
+  });
+  ids.courseStage2 = courseStage2.id;
+
+  await prisma.teachingAssignment.createMany({
+    data: [
+      { staffUserId: userIds.lecturerA!, courseId: courseStage2.id },
+      { staffUserId: userIds.techA!, courseId: courseStage2.id },
+    ],
+  });
+
   const studentWithToken = await prisma.student.create({
     data: {
       studentCode: 'STUDENT-0001',
       name: 'طالب أول',
+      stage: 2,
       studyPeriod: 'MORNING',
       section: '1',
+      sectionId: sectionOne.id,
       qrTokens: {
         create: { token: ids.studentWithTokenQr },
       },
@@ -233,8 +256,10 @@ before(async () => {
     data: {
       studentCode: ids.studentLegacyCode,
       name: 'طالب ثانٍ',
+      stage: 2,
       studyPeriod: 'MORNING',
       section: '1',
+      sectionId: sectionOne.id,
       qrTokens: {
         create: {
           token: ids.revokedQr,
@@ -248,8 +273,10 @@ before(async () => {
     data: {
       studentCode: 'ROTATE-0003',
       name: 'طالب ثالث',
+      stage: 2,
       studyPeriod: 'MORNING',
       section: '1',
+      sectionId: sectionOne.id,
       qrTokens: {
         create: { token: ids.rotateOldQr },
       },
@@ -263,6 +290,7 @@ before(async () => {
       name: 'محاضرة المحاضر أ',
       studyPeriod: 'MORNING',
       section: '1',
+      courseId: courseStage2.id,
       status: 'ACTIVE',
       qrToken: 'lecture-qr-mine-0001',
       qrExpiresAt: new Date(Date.now() + 60 * 60 * 1000),
@@ -278,6 +306,7 @@ before(async () => {
       name: 'محاضرة المحاضر ب',
       studyPeriod: 'MORNING',
       section: '1',
+      courseId: courseStage2.id,
       status: 'ACTIVE',
       qrToken: 'lecture-qr-other-0002',
       qrExpiresAt: new Date(Date.now() + 60 * 60 * 1000),
@@ -293,6 +322,7 @@ before(async () => {
       name: 'محاضرة المحاضر التقني',
       studyPeriod: 'MORNING',
       section: '1',
+      courseId: courseStage2.id,
       status: 'ACTIVE',
       qrToken: 'lecture-qr-tech-0003',
       qrExpiresAt: new Date(Date.now() + 60 * 60 * 1000),
@@ -436,9 +466,39 @@ describe('role-based access control', () => {
     assert.equal(options.status, 403);
   });
 
-  it('denies reports and lecture listing to a technical lecturer', async () => {
+  it('lists only its own lectures to a technical lecturer', async () => {
     const result = await api('/api/lectures', { token: tokens.techA! });
-    assert.equal(result.status, 403);
+    assert.equal(result.status, 200);
+    assert.ok(Array.isArray(result.body));
+    assert.ok(result.body.length >= 1);
+    assert.ok(
+      result.body.some((lecture: any) => lecture.id === ids.lectureTech),
+      'technical lecturer must see the lecture it conducts',
+    );
+    assert.equal(
+      result.body.some((lecture: any) => lecture.id === ids.lectureMine),
+      false,
+      'technical lecturer must not see lectures it does not conduct',
+    );
+    for (const lecture of result.body) {
+      assert.equal(lecture.conductedByUserId, userIds.techA);
+    }
+  });
+
+  it('cannot manage courses or assignments', async () => {
+    const course = await api('/api/courses', {
+      method: 'POST',
+      token: tokens.techA!,
+      body: { code: 'TECH-1', name: 'غير مسموح', stage: 2 },
+    });
+    assert.equal(course.status, 403);
+
+    const assignment = await api('/api/assignments', {
+      method: 'POST',
+      token: tokens.techA!,
+      body: { staffUserId: userIds.techA, courseId: ids.courseStage2 },
+    });
+    assert.equal(assignment.status, 403);
   });
 
   it('allows the registrar to manage sections', async () => {
@@ -667,7 +727,12 @@ describe('core lecture flow', () => {
     const created = await api('/api/lectures', {
       method: 'POST',
       token: tokens.lecturerA!,
-      body: { name: 'محاضرة اختبار', studyPeriod: 'MORNING', section: '1' },
+      body: {
+        name: 'محاضرة اختبار',
+        studyPeriod: 'MORNING',
+        section: '1',
+        courseId: ids.courseStage2,
+      },
     });
     assert.equal(created.status, 201);
     assert.equal(created.body.createdByUserId, userIds.lecturerA);

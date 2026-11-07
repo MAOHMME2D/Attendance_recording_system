@@ -10,15 +10,21 @@ import {
 } from 'class-validator';
 
 export class CreateStudentDto {
+  @IsOptional()
   @IsString()
-  @IsNotEmpty({ message: 'الباركود / الرقم التعريفي مطلوب' })
   @MaxLength(64)
-  studentCode!: string;
+  studentCode?: string;
 
   @IsString()
   @IsNotEmpty({ message: 'اسم الطالب مطلوب' })
   @MaxLength(200)
   name!: string;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1, { message: 'المرحلة يجب أن تكون بين 1 و4' })
+  @Max(4, { message: 'المرحلة يجب أن تكون بين 1 و4' })
+  stage?: number;
 
   @IsOptional()
   @IsIn(['MORNING', 'EVENING'])
@@ -28,6 +34,11 @@ export class CreateStudentDto {
   @IsString()
   @MaxLength(40)
   section?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  sectionId?: string;
 
   @IsOptional()
   @IsInt()

@@ -7,10 +7,40 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
+import { AuthorizationService } from '../auth/authorization.service';
 import { normalizeSection } from '../../common/utils/section.util';
+import {
+  normalizeStage,
+  normalizeStudentCode,
+  requireAcademicStage,
+  stageCodePrefix,
+  type AcademicStage,
+} from '../../common/constants/academics';
+import { isAdministrativeRole } from '../../common/constants/roles';
 import type { AuthenticatedUser } from '../../common/types/authenticated-user';
+import { recomputeStudentStats } from '../../common/utils/student-stats.util';
 import { Prisma } from '@prisma/client';
 import * as crypto from 'crypto';
+import { ImportStudentsDto, ImportStudentRowDto } from './dto/import-students.dto';
+
+interface StudentContext {
+  stage: AcademicStage;
+  studyPeriod: string;
+  section: string | null;
+  sectionId: string | null;
+}
+
+export interface ImportRowResult {
+  row: number;
+  studentCode: string;
+  name: string;
+  stage: number;
+  studyPeriod: string;
+  section: string | null;
+  sectionId: string | null;
+  status: 'VALID' | 'ERROR';
+  errors: string[];
+}
 
 @Injectable()
 export class StudentService {
@@ -19,25 +49,170 @@ export class StudentService {
   constructor(
     private prisma: PrismaService,
     private audit: AuditService,
+    private authorization: AuthorizationService,
   ) {}
 
-  /**
-   * Get all students with their attendance statistics and lecture details
-   * Sorted strictly by Excel Column A order (orderIndex)
-   */
-  async getAllWithStats(studyPeriod?: string, section?: string) {
-    const whereClause: any = {};
-    if (studyPeriod) {
-      whereClause.studyPeriod = studyPeriod;
+  // ============================================================
+  // Shared helpers
+  // ============================================================
+
+  private async assertStageAllowed(
+    actor: AuthenticatedUser | undefined,
+    stage: number,
+  ): Promise<void> {
+    if (!actor || isAdministrativeRole(actor.role)) return;
+    const stages = await this.authorization.assignedStages(actor);
+    if (!stages.includes(stage)) {
+      throw new BadRequestException('هذه المرحلة غير مسندة إليك');
     }
-    if (section && section !== 'ALL') {
-      whereClause.section = normalizeSection(section);
+  }
+
+  /**
+   * Resolves the academic context of a row: stage, study period and the
+   * section relation. A section always wins over the free-text fields so the
+   * legacy `Student.section` mirror cannot drift from `sectionId`.
+   */
+  private async resolveContext(
+    input: {
+      stage?: number;
+      studyPeriod?: string;
+      section?: string;
+      sectionId?: string;
+    },
+    defaultStage: AcademicStage = 2,
+    options: { strict?: boolean } = {},
+  ): Promise<{ context: StudentContext; errors: string[] }> {
+    const errors: string[] = [];
+    let stage = normalizeStage(input.stage ?? defaultStage);
+    let section: { id: string; name: string; stage: number; studyPeriod: string } | null = null;
+
+    if (input.sectionId) {
+      section = await this.prisma.section.findUnique({
+        where: { id: input.sectionId },
+        select: { id: true, name: true, stage: true, studyPeriod: true },
+      });
+      if (!section) {
+        errors.push('الشعبة المحددة غير موجودة');
+      }
+    } else if (input.section && input.section.trim()) {
+      const name = normalizeSection(input.section);
+      const where: Prisma.SectionWhereInput = { stage, name };
+      if (input.studyPeriod) where.studyPeriod = input.studyPeriod;
+      const matches = await this.prisma.section.findMany({
+        where,
+        select: { id: true, name: true, stage: true, studyPeriod: true },
+        take: 2,
+      });
+      if (matches.length === 1) {
+        section = matches[0];
+      } else if (matches.length > 1) {
+        errors.push('الشعبة موجودة في أكثر من دراسة؛ حدد نوع الدراسة');
+      } else {
+        errors.push(`الشعبة (${input.section}) غير موجودة في هذه المرحلة`);
+      }
+    }
+
+    const studyPeriod = section
+      ? section.studyPeriod
+      : input.studyPeriod === 'EVENING'
+        ? 'EVENING'
+        : 'MORNING';
+
+    if (section) stage = normalizeStage(section.stage);
+
+    const context: StudentContext = {
+      stage,
+      studyPeriod,
+      section: section ? section.name : null,
+      sectionId: section ? section.id : null,
+    };
+
+    if (options.strict && errors.length > 0) {
+      throw new BadRequestException(errors.join(' — '));
+    }
+
+    return { context, errors };
+  }
+
+  /** Highest numeric suffix currently used by a stage. */
+  private async codeState(stages: number[]): Promise<Map<number, number>> {
+    const state = new Map<number, number>();
+    for (const stage of Array.from(new Set(stages))) {
+      const prefix = stageCodePrefix(stage);
+      const rows = await this.prisma.student.findMany({
+        where: { studentCode: { startsWith: prefix } },
+        select: { studentCode: true },
+      });
+      let max = 1000;
+      for (const row of rows) {
+        const match = row.studentCode.match(new RegExp(`^${prefix}(\\d+)$`));
+        if (match) max = Math.max(max, Number(match[1]));
+      }
+      state.set(stage, max + 1);
+    }
+    return state;
+  }
+
+  private takeNextCode(state: Map<number, number>, stage: number): string {
+    const prefix = stageCodePrefix(stage);
+    let next = state.get(stage) ?? 1001;
+    if (next < 1001) next = 1001;
+    let code = `${prefix}${next}`;
+    // The map only tracks generated codes; a manual code may already occupy
+    // the slot. The unique constraint is the final guard, but skipping ahead
+    // here keeps confirm imports clean.
+    state.set(stage, next + 1);
+    return code;
+  }
+
+  private async assertCodeFree(code: string, exceptId?: string) {
+    const existing = await this.prisma.student.findUnique({
+      where: { studentCode: code },
+      select: { id: true, name: true, deletedAt: true },
+    });
+    if (existing && existing.id !== exceptId) {
+      throw new ConflictException(
+        `الباركود (${code}) مسجل مسبقاً باسم (${existing.name})`,
+      );
+    }
+  }
+
+  // ============================================================
+  // Read APIs
+  // ============================================================
+
+  /**
+   * Full student list with attendance statistics. Soft-deleted students are
+   * never returned, and QR credentials are never included.
+   */
+  async getAllWithStats(
+    actor: AuthenticatedUser | undefined,
+    filters: { studyPeriod?: string; section?: string; stage?: string; sectionId?: string } = {},
+  ) {
+    const whereClause: any = { deletedAt: null };
+
+    if (filters.studyPeriod) whereClause.studyPeriod = filters.studyPeriod;
+    if (filters.sectionId) whereClause.sectionId = filters.sectionId;
+    if (filters.section && filters.section !== 'ALL') {
+      whereClause.section = normalizeSection(filters.section);
+    }
+
+    if (filters.stage) {
+      const stage = requireAcademicStage(filters.stage);
+      await this.assertStageAllowed(actor, stage);
+      whereClause.stage = stage;
+    } else if (actor && !isAdministrativeRole(actor.role)) {
+      const stages = await this.authorization.assignedStages(actor);
+      whereClause.stage = { in: stages };
     }
 
     const students = await this.prisma.student.findMany({
       where: whereClause,
       include: {
+        sectionRef: { select: { id: true, name: true, label: true, stage: true } },
         attendances: {
+          // Unified statistics: only closed, non-archived lectures count.
+          where: { lecture: { status: 'CLOSED', deletedAt: null } },
           include: {
             lecture: {
               select: {
@@ -45,49 +220,42 @@ export class StudentService {
                 name: true,
                 status: true,
                 startedAt: true,
+                courseId: true,
               },
             },
           },
           orderBy: { registeredAt: 'desc' },
         },
       },
-      orderBy: [
-        { orderIndex: 'asc' },
-        { studentCode: 'asc' },
-      ],
+      orderBy: [{ orderIndex: 'asc' }, { studentCode: 'asc' }],
     });
 
     return students.map((student, idx) => {
-      const lecturePresent = student.attendances.filter(a => a.status === 'PRESENT').length;
-      const lectureAbsent = student.attendances.filter(a => a.status === 'ABSENT').length;
-
-      // The counters stored on Student are recalculated from AttendanceRecord every time a
-      // lecture is closed (see LectureService.closeLecture), so they already include these
-      // records. Adding the records on top of them double-counts every lecture.
-      // Attendance records are the source of truth; the stored counters are only used as a
-      // baseline for students that have no records yet (e.g. imported from Excel).
-      const hasRecords = student.attendances.length > 0;
-      const totalPresent = hasRecords ? lecturePresent : (student.presentCount || 0);
-      const totalAbsent = hasRecords ? lectureAbsent : (student.absentCount || 0);
-      const totalSessions = hasRecords
-        ? totalPresent + totalAbsent
-        : Math.max(student.totalSessions || 0, totalPresent + totalAbsent);
+      // Attendance records are the only source of truth: active lectures are
+      // excluded above, and stale stored counters are never used as a fallback.
+      const totalPresent = student.attendances.filter((a) => a.status === 'PRESENT').length;
+      const totalAbsent = student.attendances.filter((a) => a.status === 'ABSENT').length;
+      const totalSessions = totalPresent + totalAbsent;
 
       return {
         id: student.id,
-        orderIndex: student.orderIndex != null ? student.orderIndex : (idx + 1),
-        studentCode: student.studentCode, // الباركود (عمود G)
-        name: student.name, // اسم الطالب (عمود B)
-        studyPeriod: student.studyPeriod || 'MORNING', // صباحي / مسائي
-        section: student.section || '', // الشعبة (عمود C)
-        presentCount: totalPresent, // عدد الحضور (عمود D)
-        absentCount: totalAbsent, // عدد مرات الغياب (عمود E)
-        totalLectures: totalSessions, // إجمالي المحاضرات (عمود F)
+        orderIndex: student.orderIndex != null ? student.orderIndex : idx + 1,
+        studentCode: student.studentCode,
+        name: student.name,
+        stage: student.stage,
+        studyPeriod: student.studyPeriod || 'MORNING',
+        section: student.section || '',
+        sectionId: student.sectionId,
+        sectionLabel: student.sectionRef?.label || null,
+        presentCount: totalPresent,
+        absentCount: totalAbsent,
+        totalLectures: totalSessions,
         createdAt: student.createdAt,
-        history: student.attendances.map(a => ({
+        history: student.attendances.map((a) => ({
           attendanceId: a.id,
           lectureId: a.lecture.id,
           lectureName: a.lecture.name,
+          courseId: a.lecture.courseId,
           lectureDate: a.lecture.startedAt,
           status: a.status,
           registeredAt: a.registeredAt,
@@ -96,48 +264,87 @@ export class StudentService {
     });
   }
 
-  /**
-   * Look up a student by their ID/Code
-   */
-  async findByCode(code: string) {
+  async findByCode(code: string, actor?: AuthenticatedUser) {
     const trimmed = code.trim();
-    const student = await this.prisma.student.findUnique({
-      where: { studentCode: trimmed },
+    if (!trimmed) return null;
+
+    let student = await this.prisma.student.findFirst({
+      where: { studentCode: trimmed, deletedAt: null },
     });
 
     if (!student) {
-      const byName = await this.prisma.student.findFirst({
-        where: { name: trimmed },
+      const nameMatches = await this.prisma.student.findMany({
+        where: { name: trimmed, deletedAt: null },
+        take: 2,
       });
-      return byName || null;
+      if (nameMatches.length > 1) {
+        throw new BadRequestException(
+          'يوجد أكثر من طالب بهذا الاسم. استخدم رقم الطالب (الباركود) للبحث.',
+        );
+      }
+      student = nameMatches[0] || null;
     }
 
+    if (!student) return null;
+    if (actor && !isAdministrativeRole(actor.role)) {
+      const stages = await this.authorization.assignedStages(actor);
+      if (!stages.includes(student.stage)) return null;
+    }
     return student;
   }
 
   /**
-   * Minimal student list for lecturers who need manual attendance options.
-   * Does not expose QR credentials or full attendance history.
+   * Minimal student list for lecturers. Scoped to the stages they teach and,
+   * optionally, a specific course/section/lecture.
    */
-  async getOptions(studyPeriod?: string, section?: string) {
-    const where: any = {};
-    if (studyPeriod) where.studyPeriod = studyPeriod;
-    if (section && section !== 'ALL') where.section = normalizeSection(section);
+  async getOptions(
+    actor: AuthenticatedUser | undefined,
+    filters: {
+      studyPeriod?: string;
+      section?: string;
+      sectionId?: string;
+      stage?: string;
+      courseId?: string;
+    } = {},
+  ) {
+    const where: any = { deletedAt: null };
+    if (filters.studyPeriod) where.studyPeriod = filters.studyPeriod;
+    if (filters.sectionId) where.sectionId = filters.sectionId;
+    if (filters.section && filters.section !== 'ALL') {
+      where.section = normalizeSection(filters.section);
+    }
 
-    const students = await this.prisma.student.findMany({
+    if (filters.courseId) {
+      if (actor) await this.authorization.assertCanAccessCourse(actor, filters.courseId);
+      const course = await this.prisma.course.findUnique({
+        where: { id: filters.courseId },
+        select: { stage: true },
+      });
+      if (!course) throw new NotFoundException('المادة غير موجودة');
+      where.stage = course.stage;
+    } else if (filters.stage) {
+      const stage = requireAcademicStage(filters.stage);
+      await this.assertStageAllowed(actor, stage);
+      where.stage = stage;
+    } else if (actor && !isAdministrativeRole(actor.role)) {
+      const stages = await this.authorization.assignedStages(actor);
+      where.stage = { in: stages };
+    }
+
+    return this.prisma.student.findMany({
       where,
       select: {
         id: true,
         name: true,
         studentCode: true,
+        stage: true,
         studyPeriod: true,
         section: true,
+        sectionId: true,
         orderIndex: true,
       },
       orderBy: [{ orderIndex: 'asc' }, { studentCode: 'asc' }],
     });
-
-    return students;
   }
 
   // ============================================================
@@ -148,11 +355,6 @@ export class StudentService {
     return `qr_${crypto.randomBytes(24).toString('base64url')}`;
   }
 
-  /**
-   * Serializes token issuance/rotation for one student. Without this, two
-   * simultaneous requests could both observe "no active token" and create two.
-   * Transaction-scoped, so PostgreSQL releases it on commit/rollback.
-   */
   private async acquireStudentQrLock(
     tx: Prisma.TransactionClient,
     studentId: string,
@@ -163,7 +365,6 @@ export class StudentService {
     );
   }
 
-  /** Returns the active token, creating one if the student has none. */
   async ensureQrToken(studentId: string, actorId?: string) {
     return this.prisma.$transaction(async (tx) => {
       await this.acquireStudentQrLock(tx, studentId);
@@ -183,7 +384,6 @@ export class StudentService {
     actorId: string | undefined,
     tx: Prisma.TransactionClient,
   ) {
-    // Retry on the (very unlikely) unique collision.
     for (let attempt = 0; attempt < 5; attempt++) {
       try {
         return await tx.studentQrToken.create({
@@ -203,7 +403,6 @@ export class StudentService {
     throw new BadRequestException('تعذر إصدار رمز QR للطالب');
   }
 
-  /** Revokes the current token and returns a fresh one. */
   async rotateQrToken(studentId: string, actor: AuthenticatedUser) {
     let studentCode = '';
 
@@ -211,7 +410,7 @@ export class StudentService {
       await this.acquireStudentQrLock(tx, studentId);
 
       const student = await tx.student.findUnique({ where: { id: studentId } });
-      if (!student) {
+      if (!student || student.deletedAt) {
         throw new NotFoundException('الطالب غير موجود');
       }
       studentCode = student.studentCode;
@@ -235,10 +434,9 @@ export class StudentService {
     return token;
   }
 
-  /** Ensures tokens exist for every student (used by the migration script). */
   async backfillQrTokens(): Promise<number> {
     const students = await this.prisma.student.findMany({
-      where: { qrTokens: { none: { revokedAt: null } } },
+      where: { deletedAt: null, qrTokens: { none: { revokedAt: null } } },
       select: { id: true },
     });
     for (const student of students) {
@@ -247,56 +445,78 @@ export class StudentService {
     return students.length;
   }
 
-  /**
-   * Create a single student
-   * Columns: A: orderIndex, B: name, C: section, D: presentCount, E: absentCount, F: totalSessions, G: studentCode (barcode)
-   */
-  async create(data: {
-    studentCode: string;
-    name: string;
-    studyPeriod?: string;
-    section?: string;
-    orderIndex?: number;
-    presentCount?: number;
-    absentCount?: number;
-    totalSessions?: number;
-    rate?: number;
-  }, actor?: AuthenticatedUser) {
-    const cleanCode = data.studentCode.trim();
-    const cleanName = data.name.trim();
+  // ============================================================
+  // Write APIs
+  // ============================================================
 
-    if (!cleanCode || !cleanName) {
-      throw new BadRequestException('الباركود / الرقم التعريفي واسم الطالب مطلوبان');
+  async create(
+    data: {
+      studentCode?: string;
+      name: string;
+      stage?: number;
+      studyPeriod?: string;
+      section?: string;
+      sectionId?: string;
+      orderIndex?: number;
+      presentCount?: number;
+      absentCount?: number;
+      totalSessions?: number;
+      rate?: number;
+    },
+    actor?: AuthenticatedUser,
+  ) {
+    const cleanName = String(data.name || '').trim();
+    if (!cleanName) {
+      throw new BadRequestException('اسم الطالب مطلوب');
     }
 
-    const existing = await this.prisma.student.findUnique({
-      where: { studentCode: cleanCode },
+    const { context } = await this.resolveContext(data, normalizeStage(data.stage), {
+      strict: true,
     });
+    await this.assertStageAllowed(actor, context.stage);
 
-    if (existing) {
-      throw new ConflictException(`الباركود (${cleanCode}) مسجل مسبقاً باسم (${existing.name})`);
+    const rawCode = String(data.studentCode || '').trim();
+    let cleanCode = rawCode ? normalizeStudentCode(rawCode, context.stage) : '';
+    if (!cleanCode) {
+      const state = await this.codeState([context.stage]);
+      cleanCode = this.takeNextCode(state, context.stage);
     }
+
+    await this.assertCodeFree(cleanCode);
 
     const presentCount = Number(data.presentCount || 0);
     const absentCount = Number(data.absentCount || 0);
-    const totalSessions = data.totalSessions != null && !isNaN(Number(data.totalSessions))
-      ? Number(data.totalSessions)
-      : (presentCount + absentCount);
+    const totalSessions =
+      data.totalSessions != null && !isNaN(Number(data.totalSessions))
+        ? Number(data.totalSessions)
+        : presentCount + absentCount;
 
-    const student = await this.prisma.student.create({
-      data: {
-        orderIndex: data.orderIndex != null ? Number(data.orderIndex) : null,
-        studentCode: cleanCode,
-        name: cleanName,
-        studyPeriod: data.studyPeriod || 'MORNING',
-        section: data.section ? normalizeSection(data.section) : null,
-        presentCount,
-        absentCount,
-        totalSessions,
-      },
-    });
+    let student;
+    try {
+      student = await this.prisma.student.create({
+        data: {
+          orderIndex: data.orderIndex != null ? Number(data.orderIndex) : null,
+          studentCode: cleanCode,
+          name: cleanName,
+          stage: context.stage,
+          studyPeriod: context.studyPeriod,
+          section: context.section,
+          sectionId: context.sectionId,
+          presentCount,
+          absentCount,
+          totalSessions,
+        },
+      });
+    } catch (error: any) {
+      if (error?.code === 'P2002') {
+        throw new ConflictException(`الباركود (${cleanCode}) مسجل مسبقاً`);
+      }
+      throw error;
+    }
 
-    this.logger.log(`Created student: #${student.orderIndex} [${student.studentCode}] ${student.name} (${student.studyPeriod} - ${student.section || '-'})`);
+    this.logger.log(
+      `Created student: [${student.studentCode}] ${student.name} (stage ${student.stage} - ${student.studyPeriod} - ${student.section || '-'})`,
+    );
 
     await this.ensureQrToken(student.id, actor?.id);
     if (actor) {
@@ -305,121 +525,140 @@ export class StudentService {
         action: 'STUDENT_CREATE',
         entityType: 'Student',
         entityId: student.id,
-        details: student.studentCode,
+        details: `${student.studentCode} - ${student.name} (stage ${student.stage}, ${student.section || 'no section'})`,
       });
     }
 
     return student;
   }
 
-  /**
-   * Bulk import students (from Excel)
-   */
-  async createBatch(students: {
-    orderIndex?: number;
-    studentCode: string;
-    name: string;
-    studyPeriod?: string;
-    section?: string;
-    presentCount?: number;
-    absentCount?: number;
-    totalSessions?: number;
-    rate?: number;
-  }[], actor?: AuthenticatedUser) {
-    let created = 0;
-    let updated = 0;
-    let skipped = 0;
-    const errors: string[] = [];
-
-    for (let i = 0; i < students.length; i++) {
-      const item = students[i];
-      const code = String(item.studentCode || '').trim();
-      const name = String(item.name || '').trim();
-      const studyPeriod = item.studyPeriod || 'MORNING';
-      const section = item.section ? normalizeSection(item.section) : null;
-      const orderIndex = item.orderIndex != null ? Number(item.orderIndex) : (i + 1);
-      const presentCount = item.presentCount != null ? Math.max(0, Number(item.presentCount) || 0) : 0;
-      const absentCount = item.absentCount != null ? Math.max(0, Number(item.absentCount) || 0) : 0;
-      const totalSessions = item.totalSessions != null && !isNaN(Number(item.totalSessions))
-        ? Number(item.totalSessions)
-        : (presentCount + absentCount);
-
-      if (!code || !name) continue;
-
-      try {
-        const existing = await this.prisma.student.findUnique({
-          where: { studentCode: code },
-        });
-
-        if (existing) {
-          const updatedStudent = await this.prisma.student.update({
-            where: { id: existing.id },
-            data: {
-              orderIndex,
-              name,
-              studyPeriod,
-              section,
-              presentCount,
-              absentCount,
-              totalSessions,
-            },
-          });
-          await this.ensureQrToken(updatedStudent.id, actor?.id);
-          updated++;
-        } else {
-          const createdStudent = await this.prisma.student.create({
-            data: {
-              orderIndex,
-              studentCode: code,
-              name,
-              studyPeriod,
-              section,
-              presentCount,
-              absentCount,
-              totalSessions,
-            },
-          });
-          await this.ensureQrToken(createdStudent.id, actor?.id);
-          created++;
-        }
-      } catch (err: any) {
-        skipped++;
-        errors.push(`فشل استيراد ${code}: ${err.message}`);
-      }
-    }
-
-    return { success: true, count: created + updated, created, updated, skipped, errors };
-  }
-
-  /**
-   * Update student details
-   */
-  async update(id: string, data: { studentCode?: string; name?: string; studyPeriod?: string; section?: string }, actor?: AuthenticatedUser) {
+  async update(
+    id: string,
+    data: {
+      studentCode?: string;
+      name?: string;
+      stage?: number;
+      studyPeriod?: string;
+      section?: string;
+      sectionId?: string | null;
+      orderIndex?: number;
+    },
+    actor?: AuthenticatedUser,
+  ) {
     const student = await this.prisma.student.findUnique({ where: { id } });
-    if (!student) {
+    if (!student || student.deletedAt) {
       throw new NotFoundException('الطالب غير موجود');
     }
 
-    const updateData: any = {};
-    if (data.name && data.name.trim()) updateData.name = data.name.trim();
-    if (data.studyPeriod !== undefined) updateData.studyPeriod = data.studyPeriod || 'MORNING';
-    if (data.section !== undefined) updateData.section = data.section ? data.section.trim() : null;
-    if (data.studentCode && data.studentCode.trim()) {
-      const cleanCode = data.studentCode.trim();
-      if (cleanCode !== student.studentCode) {
-        const existing = await this.prisma.student.findUnique({
-          where: { studentCode: cleanCode },
+    let nextStage = normalizeStage(student.stage);
+    let nextPeriod = student.studyPeriod || 'MORNING';
+    let nextSection: string | null = student.section;
+    let nextSectionId: string | null = student.sectionId;
+
+    if (data.sectionId !== undefined) {
+      if (data.sectionId === null) {
+        nextSectionId = null;
+        nextSection = null;
+      } else {
+        const section = await this.prisma.section.findUnique({
+          where: { id: data.sectionId },
+          select: { id: true, name: true, stage: true, studyPeriod: true },
         });
-        if (existing) {
-          throw new ConflictException(`الباركود (${cleanCode}) مستخدم لطالب آخر`);
+        if (!section) throw new BadRequestException('الشعبة المحددة غير موجودة');
+        nextSectionId = section.id;
+        nextSection = section.name;
+        nextStage = normalizeStage(section.stage);
+        nextPeriod = section.studyPeriod;
+      }
+    } else if (data.section !== undefined) {
+      if (!data.section.trim()) {
+        nextSection = null;
+        nextSectionId = null;
+      } else {
+        const section = await this.prisma.section.findFirst({
+          where: {
+            stage: nextStage,
+            studyPeriod: nextPeriod,
+            name: normalizeSection(data.section),
+          },
+          select: { id: true, name: true },
+        });
+        if (!section) throw new BadRequestException('الشعبة غير موجودة في هذه المرحلة');
+        nextSection = section.name;
+        nextSectionId = section.id;
+      }
+    } else {
+      // Stage/period changes without a section move must not desync the section.
+      if (data.stage !== undefined) {
+        const requested = normalizeStage(data.stage);
+        if (nextSectionId) {
+          const current = await this.prisma.section.findUnique({
+            where: { id: nextSectionId },
+            select: { stage: true },
+          });
+          if (current && current.stage !== requested) {
+            throw new BadRequestException(
+              'انقل الطالب إلى شعبة في المرحلة الجديدة بدلاً من تغيير المرحلة فقط',
+            );
+          }
         }
-        updateData.studentCode = cleanCode;
+        nextStage = requested;
+      }
+      if (data.studyPeriod !== undefined) {
+        if (nextSectionId) {
+          const current = await this.prisma.section.findUnique({
+            where: { id: nextSectionId },
+            select: { studyPeriod: true },
+          });
+          if (current && current.studyPeriod !== data.studyPeriod) {
+            throw new BadRequestException(
+              'انقل الطالب إلى شعبة في الدراسة الجديدة بدلاً من تغيير الدراسة فقط',
+            );
+          }
+        }
+        nextPeriod = data.studyPeriod || 'MORNING';
       }
     }
 
-    const updated = await this.prisma.student.update({
-      where: { id },
-      data: updateData,
+    await this.assertStageAllowed(actor, nextStage);
+
+    // Unchecked input exposes the scalar sectionId directly. The relation is
+    // still updated through its foreign key, which is what we want here.
+    const updateData: Prisma.StudentUncheckedUpdateInput = {};
+    if (data.name !== undefined) {
+      const name = data.name.trim();
+      if (!name) throw new BadRequestException('اسم الطالب مطلوب');
+      updateData.name = name;
+    }
+    if (data.orderIndex !== undefined) updateData.orderIndex = data.orderIndex;
+    updateData.stage = nextStage;
+    updateData.studyPeriod = nextPeriod;
+    updateData.section = nextSection;
+    updateData.sectionId = nextSectionId;
+
+    let codeChanged = false;
+    let nextCode = student.studentCode;
+    if (data.studentCode !== undefined) {
+      const raw = data.studentCode.trim();
+      if (!raw) throw new BadRequestException('رقم الطالب مطلوب');
+      nextCode = normalizeStudentCode(raw, nextStage);
+      if (nextCode !== student.studentCode) {
+        await this.assertCodeFree(nextCode, id);
+        updateData.studentCode = nextCode;
+        codeChanged = true;
+      }
+    }
+
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const result = await tx.student.update({ where: { id }, data: updateData });
+      if (codeChanged) {
+        // The attendance table keeps a denormalised code for historical rows.
+        await tx.attendanceRecord.updateMany({
+          where: { studentId: id },
+          data: { studentCode: nextCode },
+        });
+      }
+      return result;
     });
 
     if (actor) {
@@ -428,7 +667,10 @@ export class StudentService {
         action: 'STUDENT_UPDATE',
         entityType: 'Student',
         entityId: id,
-        details: student.studentCode,
+        details:
+          `${student.studentCode} -> ${updated.studentCode}; ` +
+          `stage ${student.stage}->${updated.stage}; ` +
+          `section ${student.section || '-'}->${updated.section || '-'}`,
       });
     }
 
@@ -436,12 +678,40 @@ export class StudentService {
   }
 
   /**
-   * Delete a student
+   * Safe delete: students with attendance history are soft-deleted so the
+   * records stay intact; only students without any history are removed.
    */
   async delete(id: string, actor?: AuthenticatedUser) {
     const student = await this.prisma.student.findUnique({ where: { id } });
     if (!student) {
       throw new NotFoundException('الطالب غير موجود');
+    }
+
+    if (student.deletedAt) {
+      return { success: true, mode: 'SOFT', alreadyDeleted: true };
+    }
+
+    const attendanceCount = await this.prisma.attendanceRecord.count({
+      where: { studentId: id },
+    });
+
+    if (attendanceCount > 0) {
+      await this.prisma.student.update({
+        where: { id },
+        data: { deletedAt: new Date() },
+      });
+
+      if (actor) {
+        await this.audit.log({
+          actorUserId: actor.id,
+          action: 'STUDENT_SOFT_DELETE',
+          entityType: 'Student',
+          entityId: id,
+          details: `${student.studentCode} - ${student.name} (attendance records preserved: ${attendanceCount})`,
+        });
+      }
+
+      return { success: true, mode: 'SOFT', attendanceRecords: attendanceCount };
     }
 
     await this.prisma.student.delete({ where: { id } });
@@ -457,35 +727,290 @@ export class StudentService {
       });
     }
 
-    return { success: true };
+    return { success: true, mode: 'HARD' };
   }
 
-  /**
-   * Reset absences (تصفير الغيابات)
-   * Can reset:
-   * - All students
-   * - A specific study period (MORNING / EVENING)
-   * - A specific section
-   * - A single student
-   * resetType: 'ABSENCES_ONLY' | 'ALL_ATTENDANCE'
-   */
-  async resetAbsences(params: {
-    studyPeriod?: string;
-    section?: string;
-    studentId?: string;
-    resetType?: 'ABSENCES_ONLY' | 'ALL_ATTENDANCE';
-  }, actor?: AuthenticatedUser) {
-    const { studyPeriod, section, studentId, resetType = 'ABSENCES_ONLY' } = params;
+  // ============================================================
+  // Excel import: preview, then confirm (duplicates are rejected)
+  // ============================================================
 
-    const whereClause: any = {};
+  private async validateImportRows(dto: ImportStudentsDto) {
+    const stagesInRows = new Set<number>();
+    const defaultStage = normalizeStage(dto.stage);
+    stagesInRows.add(defaultStage);
+    for (const row of dto.students) {
+      stagesInRows.add(normalizeStage(row.stage ?? defaultStage));
+    }
+
+    const state = await this.codeState(Array.from(stagesInRows));
+    const seenCodes = new Set<string>();
+    const results: ImportRowResult[] = [];
+
+    for (let index = 0; index < dto.students.length; index++) {
+      const row = dto.students[index];
+      const name = String(row.name || '').trim();
+      const errors: string[] = [];
+
+      if (!name) errors.push('اسم الطالب مطلوب');
+
+      // A row-level section always wins over the request-level default. This
+      // matters when a spreadsheet has a different section per row; otherwise
+      // the default sectionId would silently override it.
+      let effectiveSectionId = row.sectionId;
+      let effectiveSection = row.section;
+      if (!effectiveSectionId && !effectiveSection) {
+        effectiveSectionId = dto.sectionId;
+        effectiveSection = dto.section;
+      }
+
+      const { context, errors: contextErrors } = await this.resolveContext(
+        {
+          stage: row.stage ?? dto.stage,
+          studyPeriod: row.studyPeriod ?? dto.studyPeriod,
+          section: effectiveSection,
+          sectionId: effectiveSectionId,
+        },
+        defaultStage,
+      );
+      errors.push(...contextErrors);
+
+      let code = String(row.studentCode || '').trim()
+        ? normalizeStudentCode(String(row.studentCode).trim(), context.stage)
+        : '';
+
+      if (!code) {
+        code = this.takeNextCode(state, context.stage);
+      } else {
+        const existing = await this.prisma.student.findUnique({
+          where: { studentCode: code },
+          select: { name: true },
+        });
+        if (existing) {
+          errors.push(`رقم الطالب (${code}) موجود مسبقاً باسم (${existing.name})`);
+        }
+        // Keep generated sequence ahead of a manually supplied numeric code.
+        const match = code.match(new RegExp(`^${stageCodePrefix(context.stage)}(\\d+)$`));
+        if (match) {
+          const next = state.get(context.stage) ?? 1001;
+          state.set(context.stage, Math.max(next, Number(match[1]) + 1));
+        }
+      }
+
+      const codeKey = code.toLowerCase();
+      if (seenCodes.has(codeKey)) {
+        errors.push(`رقم الطالب (${code}) مكرر داخل الملف`);
+      } else {
+        seenCodes.add(codeKey);
+      }
+
+      results.push({
+        row: index + 1,
+        studentCode: code,
+        name,
+        stage: context.stage,
+        studyPeriod: context.studyPeriod,
+        section: context.section,
+        sectionId: context.sectionId,
+        status: errors.length === 0 ? 'VALID' : 'ERROR',
+        errors,
+      });
+    }
+
+    return results;
+  }
+
+  async previewImport(dto: ImportStudentsDto) {
+    const rows = await this.validateImportRows(dto);
+    const valid = rows.filter((row) => row.status === 'VALID').length;
+    return {
+      success: true,
+      summary: {
+        total: rows.length,
+        valid,
+        invalid: rows.length - valid,
+      },
+      rows,
+    };
+  }
+
+  async importStudents(dto: ImportStudentsDto, actor?: AuthenticatedUser) {
+    const rows = await this.validateImportRows(dto);
+    let created = 0;
+    let rejected = 0;
+    const errors: string[] = [];
+    let orderCursor = 0;
+
+    for (const row of rows) {
+      if (row.status !== 'VALID') {
+        rejected++;
+        errors.push(`صف ${row.row} (${row.studentCode || row.name}): ${row.errors.join(' — ')}`);
+        continue;
+      }
+
+      try {
+        orderCursor++;
+        const student = await this.prisma.student.create({
+          data: {
+            orderIndex: orderCursor,
+            studentCode: row.studentCode,
+            name: row.name,
+            stage: row.stage,
+            studyPeriod: row.studyPeriod,
+            section: row.section,
+            sectionId: row.sectionId,
+            presentCount: 0,
+            absentCount: 0,
+            totalSessions: 0,
+          },
+        });
+        await this.ensureQrToken(student.id, actor?.id);
+        created++;
+      } catch (error: any) {
+        rejected++;
+        const message =
+          error?.code === 'P2002'
+            ? 'رقم الطالب مكرر في قاعدة البيانات'
+            : error?.message || 'خطأ غير معروف';
+        errors.push(`صف ${row.row} (${row.studentCode}): ${message}`);
+      }
+    }
+
+    if (actor) {
+      await this.audit.log({
+        actorUserId: actor.id,
+        action: 'STUDENTS_IMPORT',
+        entityType: 'Student',
+        details: `created=${created}, rejected=${rejected}, total=${rows.length}`,
+      });
+    }
+
+    return {
+      success: true,
+      created,
+      rejected,
+      skipped: rejected,
+      updated: 0,
+      count: created,
+      errors,
+    };
+  }
+
+  /** Backwards-compatible bulk endpoint (strict: never updates existing rows). */
+  async createBatch(students: ImportStudentRowDto[], actor?: AuthenticatedUser) {
+    return this.importStudents({ students }, actor);
+  }
+
+  // ============================================================
+  // Absences reset (unchanged semantics, soft-deleted students excluded)
+  // ============================================================
+
+  /**
+   * Resets attendance/absence data for an explicit academic scope.
+   *
+   * The scope must never be implicit: either one student, or a stage plus an
+   * optional study period/section. A request without a stage is rejected so a
+   * reset can never wipe every stage by accident.
+   */
+  async resetAbsences(
+    params: {
+      stage?: number | string;
+      studyPeriod?: string;
+      section?: string;
+      sectionId?: string;
+      studentId?: string;
+      resetType?: 'ABSENCES_ONLY' | 'ALL_ATTENDANCE';
+    },
+    actor?: AuthenticatedUser,
+  ) {
+    const {
+      stage,
+      studyPeriod,
+      section,
+      sectionId,
+      studentId,
+      resetType = 'ABSENCES_ONLY',
+    } = params;
+
+    const whereClause: any = { deletedAt: null };
+    let scopeLabel = '';
+
     if (studentId) {
-      whereClause.id = studentId;
+      const student = await this.prisma.student.findUnique({
+        where: { id: studentId },
+        select: { id: true, stage: true, studentCode: true },
+      });
+      if (!student || !student.stage) {
+        throw new NotFoundException('الطالب غير موجود');
+      }
+      await this.assertStageAllowed(actor, normalizeStage(student.stage));
+      whereClause.id = student.id;
+      scopeLabel = `student=${student.studentCode}, stage=${student.stage}`;
     } else {
-      if (studyPeriod && (studyPeriod === 'MORNING' || studyPeriod === 'EVENING')) {
+      if (stage === undefined || stage === null || String(stage).trim() === '') {
+        throw new BadRequestException(
+          'حدد المرحلة قبل تصفير الغيابات. لا يمكن التصفير عبر جميع المراحل.',
+        );
+      }
+      const requestedStage = requireAcademicStage(stage);
+      await this.assertStageAllowed(actor, requestedStage);
+      whereClause.stage = requestedStage;
+
+      if (studyPeriod) {
+        if (studyPeriod !== 'MORNING' && studyPeriod !== 'EVENING') {
+          throw new BadRequestException('نوع الدراسة غير صالح');
+        }
         whereClause.studyPeriod = studyPeriod;
       }
-      if (section && section !== 'ALL') {
-        whereClause.section = normalizeSection(section);
+
+      if (sectionId) {
+        const target = await this.prisma.section.findUnique({
+          where: { id: sectionId },
+          select: { id: true, name: true, stage: true, studyPeriod: true },
+        });
+        if (!target) {
+          throw new BadRequestException('الشعبة المحددة غير موجودة');
+        }
+        if (target.stage !== requestedStage) {
+          throw new BadRequestException('الشعبة المحددة لا تنتمي إلى المرحلة المختارة');
+        }
+        if (studyPeriod && target.studyPeriod !== studyPeriod) {
+          throw new BadRequestException('الشعبة المحددة لا تنتمي إلى الدراسة المختارة');
+        }
+        whereClause.studyPeriod = target.studyPeriod;
+        whereClause.OR = [
+          { sectionId: target.id },
+          { sectionId: null, section: target.name },
+        ];
+        scopeLabel = `stage=${requestedStage}, period=${target.studyPeriod}, section=${target.name}`;
+      } else if (section && section !== 'ALL') {
+        const name = normalizeSection(section);
+        if (!name) {
+          throw new BadRequestException('الشعبة غير صالحة');
+        }
+        const matches = await this.prisma.section.findMany({
+          where: {
+            stage: requestedStage,
+            name,
+            ...(studyPeriod ? { studyPeriod } : {}),
+          },
+          select: { id: true, name: true, studyPeriod: true },
+          take: 2,
+        });
+        if (matches.length === 0) {
+          throw new BadRequestException('الشعبة غير موجودة في المرحلة المختارة');
+        }
+        if (matches.length > 1) {
+          throw new BadRequestException('الشعبة موجودة في أكثر من دراسة؛ حدد نوع الدراسة');
+        }
+        whereClause.studyPeriod = matches[0].studyPeriod;
+        whereClause.OR = [
+          { sectionId: matches[0].id },
+          { sectionId: null, section: matches[0].name },
+        ];
+        scopeLabel = `stage=${requestedStage}, period=${matches[0].studyPeriod}, section=${matches[0].name}`;
+      } else {
+        scopeLabel =
+          `stage=${requestedStage}, period=${studyPeriod || 'ALL'}, section=ALL`;
       }
     }
 
@@ -495,92 +1020,56 @@ export class StudentService {
     });
 
     if (students.length === 0) {
-      return { success: true, count: 0, message: 'لم يتم العثور على طلاب مطابقين للتصفير' };
-    }
-
-    const studentIds = students.map(s => s.id);
-
-    if (resetType === 'ALL_ATTENDANCE') {
-      // 1. Delete all attendance records for these students
-      await this.prisma.attendanceRecord.deleteMany({
-        where: { studentId: { in: studentIds } },
-      });
-
-      // 2. Reset counts on student table
-      await this.prisma.student.updateMany({
-        where: { id: { in: studentIds } },
-        data: {
-          presentCount: 0,
-          absentCount: 0,
-          totalSessions: 0,
-          rate: 100,
-        },
-      });
-
-      this.logger.log(`Full reset (attendance + absences) completed for ${students.length} students`);
-
-      if (actor) {
-        await this.audit.log({
-          actorUserId: actor.id,
-          action: 'ATTENDANCE_RESET_ALL',
-          entityType: 'Student',
-          details: `scope=${studyPeriod || 'ALL'}/${section || 'ALL'}, count=${students.length}`,
-        });
-      }
-
       return {
         success: true,
-        count: students.length,
-        message: `تم تصفير سجل الحضور والغياب بالكامل لـ ${students.length} طالب بنجاح`,
-      };
-    } else {
-      // ABSENCES_ONLY:
-      // 1. Delete ABSENT records for these students
-      await this.prisma.attendanceRecord.deleteMany({
-        where: {
-          studentId: { in: studentIds },
-          status: 'ABSENT',
-        },
-      });
-
-      // 2. Set absentCount = 0 and recalculate totalSessions
-      for (const s of students) {
-        const studentData = await this.prisma.student.findUnique({
-          where: { id: s.id },
-          include: { attendances: true },
-        });
-
-        if (studentData) {
-          const presentCount = studentData.attendances.filter(a => a.status === 'PRESENT').length;
-          await this.prisma.student.update({
-            where: { id: s.id },
-            data: {
-              absentCount: 0,
-              presentCount,
-              totalSessions: presentCount,
-              rate: 100,
-            },
-          });
-        }
-      }
-
-      this.logger.log(`Absences reset completed for ${students.length} students`);
-
-      if (actor) {
-        await this.audit.log({
-          actorUserId: actor.id,
-          action: 'ATTENDANCE_RESET_ABSENCES',
-          entityType: 'Student',
-          details: `scope=${studyPeriod || 'ALL'}/${section || 'ALL'}, count=${students.length}`,
-        });
-      }
-
-      return {
-        success: true,
-        count: students.length,
-        message: `تم تصفير الغيابات لـ ${students.length} طالب بنجاح`,
+        count: 0,
+        message: 'لم يتم العثور على طلاب مطابقين للتصفير',
       };
     }
+
+    const studentIds = students.map((s) => s.id);
+
+    await this.prisma.$transaction(async (tx) => {
+      if (resetType === 'ALL_ATTENDANCE') {
+        await tx.attendanceRecord.deleteMany({
+          where: { studentId: { in: studentIds } },
+        });
+      } else {
+        await tx.attendanceRecord.deleteMany({
+          where: {
+            studentId: { in: studentIds },
+            status: 'ABSENT',
+          },
+        });
+      }
+      await recomputeStudentStats(tx, studentIds);
+    });
+
+    const action =
+      resetType === 'ALL_ATTENDANCE'
+        ? 'ATTENDANCE_RESET_ALL'
+        : 'ATTENDANCE_RESET_ABSENCES';
+
+    if (actor) {
+      await this.audit.log({
+        actorUserId: actor.id,
+        action,
+        entityType: 'Student',
+        details: `scope=${scopeLabel}, type=${resetType}, count=${students.length}`,
+      });
+    }
+
+    this.logger.log(
+      `${resetType} completed for ${students.length} students (${scopeLabel})`,
+    );
+
+    return {
+      success: true,
+      count: students.length,
+      message:
+        resetType === 'ALL_ATTENDANCE'
+          ? `تم تصفير سجل الحضور والغياب بالكامل لـ ${students.length} طالب بنجاح`
+          : `تم تصفير الغيابات لـ ${students.length} طالب بنجاح`,
+    };
   }
 }
-

@@ -1,4 +1,12 @@
-import { IsIn, IsOptional, IsString, MaxLength } from 'class-validator';
+import {
+  IsIn,
+  IsInt,
+  IsOptional,
+  IsString,
+  Max,
+  MaxLength,
+  Min,
+} from 'class-validator';
 
 export class UpdateStudentDto {
   @IsOptional()
@@ -12,6 +20,12 @@ export class UpdateStudentDto {
   name?: string;
 
   @IsOptional()
+  @IsInt()
+  @Min(1, { message: 'المرحلة يجب أن تكون بين 1 و4' })
+  @Max(4, { message: 'المرحلة يجب أن تكون بين 1 و4' })
+  stage?: number;
+
+  @IsOptional()
   @IsIn(['MORNING', 'EVENING'])
   studyPeriod?: 'MORNING' | 'EVENING';
 
@@ -19,4 +33,15 @@ export class UpdateStudentDto {
   @IsString()
   @MaxLength(40)
   section?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  sectionId?: string | null;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(100000)
+  orderIndex?: number;
 }

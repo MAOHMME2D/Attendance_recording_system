@@ -2,7 +2,7 @@
 
 import React, { useEffect, useMemo, useState } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
-import { studentApi } from '../../lib/api';
+import { ApiError, studentApi } from '../../lib/api';
 
 interface StudentData {
   id: string;
@@ -30,6 +30,7 @@ export default function BulkStudentCardsModal({ students, onClose }: BulkStudent
     let cancelled = false;
     const queue = [...students];
     const loaded: Record<string, string> = {};
+    const failures: string[] = [];
     let failed = 0;
 
     setLoading(true);
@@ -42,8 +43,13 @@ export default function BulkStudentCardsModal({ students, onClose }: BulkStudent
         try {
           const result = await studentApi.getQr(student.id);
           loaded[student.id] = result.token;
-        } catch {
+        } catch (error) {
           failed += 1;
+          const message =
+            error instanceof ApiError && error.message
+              ? error.message
+              : 'تعذر إصدار رمز QR';
+          if (!failures.includes(message)) failures.push(message);
         }
       }
     };
@@ -57,7 +63,12 @@ export default function BulkStudentCardsModal({ students, onClose }: BulkStudent
       setTokens(loaded);
       setLoading(false);
       if (failed > 0) {
-        setLoadError(`تعذر تحميل رمز QR لـ ${failed} طالب. أعد فتح النافذة للمحاولة مرة أخرى.`);
+        // Show the backend message (e.g. a duplicate/conflicting QR row) instead
+        // of a vague failure so the operator knows what to fix.
+        const detail = failures.length > 0 ? `: ${failures.join(' — ')}` : '';
+        setLoadError(
+          `تعذر تحميل رمز QR لـ ${failed} طالب${detail}. أعد فتح النافذة للمحاولة مرة أخرى.`,
+        );
       }
     });
 

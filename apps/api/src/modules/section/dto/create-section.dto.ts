@@ -1,6 +1,21 @@
-import { IsIn, IsNotEmpty, IsOptional, IsString, MaxLength } from 'class-validator';
+import {
+  IsIn,
+  IsInt,
+  IsNotEmpty,
+  IsOptional,
+  IsString,
+  Max,
+  MaxLength,
+  Min,
+} from 'class-validator';
 
 export class CreateSectionDto {
+  @IsOptional()
+  @IsInt()
+  @Min(1, { message: 'المرحلة يجب أن تكون بين 1 و4' })
+  @Max(4, { message: 'المرحلة يجب أن تكون بين 1 و4' })
+  stage?: number;
+
   @IsString()
   @IsIn(['MORNING', 'EVENING'], { message: 'نوع الدراسة غير صالح' })
   studyPeriod!: 'MORNING' | 'EVENING';

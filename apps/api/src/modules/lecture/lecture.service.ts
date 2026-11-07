@@ -10,9 +10,17 @@ import { AttendanceGateway } from './attendance.gateway';
 import { AuthorizationService } from '../auth/authorization.service';
 import { AuditService } from '../audit/audit.service';
 import { normalizeSection } from '../../common/utils/section.util';
+import { normalizeStage } from '../../common/constants/academics';
+import { recomputeStudentStats } from '../../common/utils/student-stats.util';
+import { isAdministrativeRole } from '../../common/constants/roles';
 import type { AuthenticatedUser } from '../../common/types/authenticated-user';
 import * as crypto from 'crypto';
 import * as os from 'os';
+
+/** A shown QR code is valid for this long. */
+const QR_TTL_MS = 25 * 1000;
+/** A new code is generated before the previous one expires. */
+const QR_ROTATION_MS = 22 * 1000;
 
 function getAllLocalIPs(): { ip: string; name: string }[] {
   const interfaces = os.networkInterfaces();
@@ -62,12 +70,28 @@ function getLocalIP(): string {
   return ips[0]?.ip || '127.0.0.1';
 }
 
+/** "1,2" -> ["1", "2"]; "ALL"/empty -> []. */
+function parseSectionNames(value?: string | null): string[] {
+  const raw = String(value || '').trim();
+  if (!raw || raw.toUpperCase() === 'ALL') return [];
+  return raw
+    .split(',')
+    .map((part) => normalizeSection(part))
+    .filter(Boolean);
+}
+
+function isUniqueViolation(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    (error as { code?: string }).code === 'P2002'
+  );
+}
+
 @Injectable()
 export class LectureService {
   private readonly logger = new Logger(LectureService.name);
   private tokenRotationIntervals: Map<string, NodeJS.Timeout> = new Map();
-  private activeTokens: Map<string, { lectureId: string; lectureName: string; expiresAt: Date }> =
-    new Map();
 
   constructor(
     private prisma: PrismaService,
@@ -90,21 +114,114 @@ export class LectureService {
     name: string,
     studyPeriod: string | undefined,
     section: string | undefined,
+    courseId: string | undefined,
     actor: AuthenticatedUser,
+    sectionId?: string,
   ) {
     const cleanName = String(name || '').trim();
     if (!cleanName) {
       throw new BadRequestException('اسم المحاضرة مطلوب');
     }
 
+    // Resolve the course. Lecturers and technical lecturers may only create
+    // lectures for courses assigned to them. Administrators choose explicitly.
+    let course: { id: string; code: string; name: string; stage: number } | null = null;
+    if (courseId) {
+      course = await this.prisma.course.findUnique({
+        where: { id: courseId },
+        select: { id: true, code: true, name: true, stage: true },
+      });
+      if (!course) throw new NotFoundException('المادة غير موجودة');
+      if (!isAdministrativeRole(actor.role)) {
+        if (!(await this.authorization.canAccessCourse(actor, course.id))) {
+          throw new ForbiddenException('هذه المادة غير مسندة إليك');
+        }
+      }
+    } else if (!isAdministrativeRole(actor.role)) {
+      const assigned = await this.authorization.assignedCourseIds(actor);
+      if (assigned.length === 0) {
+        throw new ForbiddenException('لم يتم إسناد أي مادة إليك بعد');
+      }
+      if (assigned.length > 1) {
+        throw new BadRequestException('اختر المادة قبل إنشاء المحاضرة');
+      }
+      course = await this.prisma.course.findUnique({
+        where: { id: assigned[0] },
+        select: { id: true, code: true, name: true, stage: true },
+      });
+      if (!course) throw new NotFoundException('المادة غير موجودة');
+    } else {
+      throw new BadRequestException('اختر المادة قبل إنشاء المحاضرة');
+    }
+
+    // Validate sections against the course stage and resolve the study period.
+    let resolvedPeriod =
+      studyPeriod === 'EVENING' ? 'EVENING' : studyPeriod === 'MORNING' ? 'MORNING' : '';
+    let resolvedSection: string | null = null;
+
+    if (sectionId) {
+      // Stable reference: the section row wins over the free-text name.
+      const selected = await this.prisma.section.findUnique({
+        where: { id: sectionId },
+        select: { name: true, stage: true, studyPeriod: true },
+      });
+      if (!selected) {
+        throw new BadRequestException('الشعبة المحددة غير موجودة');
+      }
+      if (selected.stage !== course.stage) {
+        throw new BadRequestException(
+          `الشعبة (${selected.name}) لا تنتمي إلى المرحلة ${course.stage}`,
+        );
+      }
+      if (resolvedPeriod && selected.studyPeriod !== resolvedPeriod) {
+        throw new BadRequestException('الشعبة المختارة لا تنتمي إلى هذه الدراسة');
+      }
+      resolvedPeriod = selected.studyPeriod;
+      resolvedSection = normalizeSection(selected.name);
+    } else {
+      const rawSection = String(section || '').trim();
+      if (rawSection && rawSection.toUpperCase() !== 'ALL') {
+        const names = parseSectionNames(rawSection);
+        if (names.length === 0) {
+          throw new BadRequestException('الشعبة غير صالحة');
+        }
+        const sections = await this.prisma.section.findMany({
+          where: {
+            stage: course.stage,
+            name: { in: names },
+            ...(resolvedPeriod ? { studyPeriod: resolvedPeriod } : {}),
+          },
+          select: { name: true, studyPeriod: true },
+        });
+        const found = new Set(sections.map((row) => normalizeSection(row.name)));
+        const missing = names.filter((name) => !found.has(name));
+        if (missing.length > 0) {
+          throw new BadRequestException(
+            `الشعبة (${missing.join(' / ')}) غير موجودة في المرحلة ${course.stage}`,
+          );
+        }
+        const periods = new Set(sections.map((row) => row.studyPeriod));
+        if (periods.size > 1) {
+          throw new BadRequestException('الشعب المختارة تنتمي إلى دراستين مختلفتين');
+        }
+        resolvedPeriod = sections[0].studyPeriod;
+        resolvedSection = names.join(',');
+      } else if (rawSection.toUpperCase() === 'ALL') {
+        resolvedSection = 'ALL';
+      }
+    }
+
+    if (!resolvedPeriod) resolvedPeriod = 'MORNING';
+
     const token = this.generateToken();
-    const expiresAt = new Date(Date.now() + 25 * 1000);
+    const expiresAt = new Date(Date.now() + QR_TTL_MS);
 
     const lecture = await this.prisma.lecture.create({
       data: {
         name: cleanName,
-        studyPeriod: studyPeriod === 'EVENING' ? 'EVENING' : 'MORNING',
-        section: section ? section.trim() : null,
+        studyPeriod: resolvedPeriod,
+        section: resolvedSection,
+        courseId: course.id,
         qrToken: token,
         qrExpiresAt: expiresAt,
         // The staff member starting the session is the recorded conductor.
@@ -118,29 +235,24 @@ export class LectureService {
       action: 'LECTURE_CREATE',
       entityType: 'Lecture',
       entityId: lecture.id,
-      details: `${cleanName} (${lecture.studyPeriod}${lecture.section ? ` / ${lecture.section}` : ''})`,
+      details: `${cleanName} (${course.code} / stage ${course.stage} / ${lecture.studyPeriod}${lecture.section ? ` / ${lecture.section}` : ''})`,
     });
 
-    // Store token in active cache (valid for 3 minutes for scanned students)
-    this.activeTokens.set(token, {
-      lectureId: lecture.id,
-      lectureName: name,
-      expiresAt: new Date(Date.now() + 180 * 1000),
-    });
-
-    // Start QR token rotation
+    // Start QR token rotation. The database row is the only source of truth for
+    // token validity; there is no separate long-lived acceptance cache.
     this.startRotation(lecture.id);
 
     const localIP = getLocalIP();
     const webPort = process.env.WEB_PORT || 3000;
     const allIPs = getAllLocalIPs();
 
-    this.logger.log(`Lecture created: ${lecture.id} - "${name}"`);
+    this.logger.log(`Lecture created: ${lecture.id} - "${name}" (${course.code})`);
 
     return {
       ...lecture,
+      course,
       serverAddress: `http://${localIP}:${webPort}`,
-      availableAddresses: allIPs.map(i => ({
+      availableAddresses: allIPs.map((i) => ({
         name: i.name,
         ip: i.ip,
         url: `http://${i.ip}:${webPort}`,
@@ -152,9 +264,10 @@ export class LectureService {
    * Get a lecture by ID (only if the actor may access it)
    */
   async getLecture(id: string, actor: AuthenticatedUser) {
-    const lecture = await this.prisma.lecture.findUnique({
-      where: { id },
+    const lecture = await this.prisma.lecture.findFirst({
+      where: { id, deletedAt: null },
       include: {
+        course: { select: { id: true, code: true, name: true, stage: true } },
         attendances: {
           orderBy: { registeredAt: 'asc' },
         },
@@ -176,7 +289,7 @@ export class LectureService {
     return {
       ...lecture,
       serverAddress: `http://${localIP}:${webPort}`,
-      availableAddresses: allIPs.map(i => ({
+      availableAddresses: allIPs.map((i) => ({
         name: i.name,
         ip: i.ip,
         url: `http://${i.ip}:${webPort}`,
@@ -191,10 +304,12 @@ export class LectureService {
     const lecture = await this.prisma.lecture.findFirst({
       where: {
         status: 'ACTIVE',
+        deletedAt: null,
         ...this.authorization.lectureScope(actor),
       },
       orderBy: { startedAt: 'desc' },
       include: {
+        course: { select: { id: true, code: true, name: true, stage: true } },
         attendances: {
           orderBy: { registeredAt: 'asc' },
         },
@@ -217,7 +332,7 @@ export class LectureService {
     return {
       ...lecture,
       serverAddress: `http://${localIP}:${webPort}`,
-      availableAddresses: allIPs.map(i => ({
+      availableAddresses: allIPs.map((i) => ({
         name: i.name,
         ip: i.ip,
         url: `http://${i.ip}:${webPort}`,
@@ -226,11 +341,22 @@ export class LectureService {
   }
 
   /**
-   * Close a lecture and calculate present vs absent from student database
+   * Close a lecture and calculate present vs absent from the student database.
+   *
+   * Scope rules:
+   *   stage       <- the lecture course (required; no global fallback)
+   *   studyPeriod <- the lecture
+   *   section     <- the lecture sections, matched through sectionId when the
+   *                  student has one and through the legacy text mirror only
+   *                  for rows that are not linked yet
+   *
+   * A section with no students produces zero records; it never widens to the
+   * whole stage.
    */
   async closeLecture(id: string, actor: AuthenticatedUser, ipAddress?: string) {
     const lecture = await this.prisma.lecture.findUnique({
       where: { id },
+      include: { course: { select: { id: true, code: true, name: true, stage: true } } },
     });
 
     if (!lecture) {
@@ -245,151 +371,172 @@ export class LectureService {
       throw new BadRequestException('Lecture is already closed');
     }
 
-    // Stop QR rotation
-    this.stopRotation(id);
+    if (!lecture.course) {
+      throw new BadRequestException(
+        'لا يمكن إنهاء محاضرة غير مرتبطة بمادة. أنشئ المحاضرة من صفحة المحاضرات.',
+      );
+    }
 
-    // 1. Get students registered for this lecture's studyPeriod & section(s)
-    let periodStudents = await this.prisma.student.findMany({
-      where: lecture.studyPeriod ? { studyPeriod: lecture.studyPeriod } : {},
+    const stage = normalizeStage(lecture.course.stage);
+    const studyPeriod = lecture.studyPeriod || 'MORNING';
+    const sectionNames = parseSectionNames(lecture.section);
+
+    // Resolve stable section ids for the lecture's names. This is what keeps a
+    // renamed section from falling back to the whole stage.
+    const sectionRows =
+      sectionNames.length > 0
+        ? await this.prisma.section.findMany({
+            where: {
+              stage,
+              studyPeriod,
+              name: { in: sectionNames },
+            },
+            select: { id: true },
+          })
+        : [];
+    const sectionIds = sectionRows.map((row) => row.id);
+
+    const candidates = await this.prisma.student.findMany({
+      where: { deletedAt: null, stage, studyPeriod },
       orderBy: [{ orderIndex: 'asc' }, { studentCode: 'asc' }],
     });
 
-    // If no students matched the studyPeriod, fallback to all students to avoid dropping the cohort
-    if (periodStudents.length === 0) {
-      periodStudents = await this.prisma.student.findMany({
-        orderBy: [{ orderIndex: 'asc' }, { studentCode: 'asc' }],
-      });
-    }
+    const allStudents =
+      sectionNames.length === 0
+        ? candidates
+        : candidates.filter((student) => {
+            if (student.sectionId && sectionIds.includes(student.sectionId)) {
+              return true;
+            }
+            // Legacy rows without sectionId still carry the text mirror.
+            if (!student.sectionId) {
+              const key = normalizeSection(student.section);
+              return Boolean(key) && sectionNames.includes(key);
+            }
+            return false;
+          });
 
-    let allStudents = periodStudents;
-    if (lecture.section && lecture.section !== 'ALL') {
-      const selectedSections = lecture.section
-        .split(',')
-        .map(s => normalizeSection(s))
-        .filter(Boolean);
+    // Stop QR rotation before any write; a failed close leaves the lecture
+    // ACTIVE but without a refreshed code, which is safe (the old token still
+    // expires according to qrExpiresAt).
+    this.stopRotation(id);
 
-      const matchedStudents = periodStudents.filter(student => {
-        if (!student.section) return false;
-        const studentSec = normalizeSection(student.section);
-        return selectedSections.includes(studentSec);
-      });
-
-      if (matchedStudents.length > 0) {
-        allStudents = matchedStudents;
-      }
-    }
-
-    // 2. Get all attendance records currently registered for this lecture
     const existingRecords = await this.prisma.attendanceRecord.findMany({
       where: { lectureId: id },
+      select: { studentId: true, studentCode: true },
     });
 
     const attendedStudentIds = new Set(
-      existingRecords.map(r => r.studentId).filter(Boolean)
+      existingRecords.map((record) => record.studentId).filter(Boolean),
     );
     const attendedCodes = new Set(
-      existingRecords.map(r => String(r.studentCode || '').trim()).filter(Boolean)
-    );
-    const attendedNames = new Set(
-      existingRecords.map(r => r.studentName.trim().toLowerCase())
+      existingRecords
+        .map((record) => String(record.studentCode || '').trim())
+        .filter(Boolean),
     );
 
-    // 3. For any student in target group who did NOT attend, auto-record them as ABSENT
-    for (const student of allStudents) {
-      const hasAttended = (student.id && attendedStudentIds.has(student.id)) ||
-        (student.studentCode && attendedCodes.has(String(student.studentCode).trim())) ||
-        attendedNames.has(student.name.trim().toLowerCase());
+    const summary = await this.prisma.$transaction(async (tx) => {
+      // For any scoped student who did not attend, record an explicit ABSENT
+      // row. Duplicate-key errors are surfaced, never swallowed.
+      const missing = allStudents.filter((student) => {
+        if (attendedStudentIds.has(student.id)) return false;
+        if (
+          student.studentCode &&
+          attendedCodes.has(String(student.studentCode).trim())
+        ) {
+          return false;
+        }
+        return true;
+      });
 
-      if (!hasAttended) {
+      if (missing.length > 0) {
         try {
-          await this.prisma.attendanceRecord.create({
-            data: {
+          await tx.attendanceRecord.createMany({
+            data: missing.map((student) => ({
               lectureId: id,
               studentId: student.id,
               studentCode: student.studentCode,
               studentName: student.name,
               status: 'ABSENT',
-            },
+            })),
           });
-        } catch (e) {
-          // ignore potential duplicate
+        } catch (error) {
+          if (isUniqueViolation(error)) {
+            throw new BadRequestException(
+              'تعذر إنهاء المحاضرة بسبب تسجيل متزامن لطالب. أعد المحاولة.',
+            );
+          }
+          throw error;
         }
       }
-    }
 
-    // 4. Update student statistics (presentCount, absentCount, totalSessions, rate)
-    for (const student of allStudents) {
-      const records = await this.prisma.attendanceRecord.findMany({
-        where: { studentId: student.id },
+      await tx.lecture.update({
+        where: { id },
+        data: { status: 'CLOSED', closedAt: new Date() },
       });
-      const p = records.filter(r => r.status === 'PRESENT').length;
-      const a = records.filter(r => r.status === 'ABSENT').length;
-      const total = p + a;
-      const rate = total > 0 ? Math.round((p / total) * 100) : 100;
-      await this.prisma.student.update({
-        where: { id: student.id },
-        data: { presentCount: p, absentCount: a, totalSessions: total, rate },
-      });
-    }
 
-    // 5. Mark lecture CLOSED
-    const updated = await this.prisma.lecture.update({
-      where: { id },
-      data: {
-        status: 'CLOSED',
-        closedAt: new Date(),
-      },
-      include: {
-        attendances: {
-          orderBy: [{ studentCode: 'asc' }, { studentName: 'asc' }],
+      await recomputeStudentStats(
+        tx,
+        allStudents.map((student) => student.id),
+      );
+
+      return tx.lecture.findUnique({
+        where: { id },
+        include: {
+          attendances: {
+            orderBy: [{ studentCode: 'asc' }, { studentName: 'asc' }],
+          },
         },
-      },
+      });
     });
 
-    const presentStudents = updated.attendances.filter(a => a.status === 'PRESENT');
-    const absentStudents = updated.attendances.filter(a => a.status === 'ABSENT');
+    if (!summary) {
+      throw new NotFoundException('Lecture not found');
+    }
 
-    const summary = {
+    const presentStudents = summary.attendances.filter((a) => a.status === 'PRESENT');
+    const absentStudents = summary.attendances.filter((a) => a.status === 'ABSENT');
+
+    const result = {
       lectureId: id,
-      lectureName: updated.name,
+      lectureName: summary.name,
       present: presentStudents.length,
       absent: absentStudents.length,
-      total: updated.attendances.length,
+      total: summary.attendances.length,
       presentStudents,
       absentStudents,
     };
 
-    // Clean tokens for this lecture
-    for (const [t, info] of this.activeTokens.entries()) {
-      if (info.lectureId === id) {
-        this.activeTokens.delete(t);
-      }
-    }
-
-    // Emit lecture closed event
-    this.gateway.emitLectureClosed(id, summary);
+    this.gateway.emitLectureClosed(id, result);
 
     await this.audit.log({
       actorUserId: actor.id,
       action: 'LECTURE_CLOSE',
       entityType: 'Lecture',
       entityId: id,
-      details: `present=${presentStudents.length}, absent=${absentStudents.length}`,
+      details:
+        `stage=${stage}, period=${studyPeriod}, ` +
+        `section=${lecture.section || 'ALL'}, students=${allStudents.length}, ` +
+        `present=${presentStudents.length}, absent=${absentStudents.length}`,
       ipAddress,
     });
 
-    this.logger.log(`Lecture closed: ${id} - Present: ${presentStudents.length}, Absent: ${absentStudents.length}`);
+    this.logger.log(
+      `Lecture closed: ${id} - Present: ${presentStudents.length}, Absent: ${absentStudents.length}`,
+    );
 
-    return summary;
+    return result;
   }
 
   /**
-   * Get all lectures the actor is allowed to see (for reports)
+   * Get all lectures the actor is allowed to see (for reports). Archived
+   * lectures stay in the database but are not shown.
    */
   async getAllLectures(actor: AuthenticatedUser) {
     return this.prisma.lecture.findMany({
-      where: this.authorization.lectureScope(actor),
+      where: { deletedAt: null, ...this.authorization.lectureScope(actor) },
       include: {
+        course: { select: { id: true, code: true, name: true, stage: true } },
         _count: {
           select: { attendances: true },
         },
@@ -409,7 +556,10 @@ export class LectureService {
     actor: Pick<AuthenticatedUser, 'id' | 'role'>,
     lectureId: string,
   ) {
-    const lecture = await this.prisma.lecture.findUnique({ where: { id: lectureId } });
+    const lecture = await this.prisma.lecture.findFirst({
+      where: { id: lectureId, deletedAt: null },
+      include: { course: { select: { id: true, code: true, name: true, stage: true } } },
+    });
     if (!lecture) {
       throw new NotFoundException('المحاضرة غير موجودة');
     }
@@ -423,13 +573,19 @@ export class LectureService {
     actor: Pick<AuthenticatedUser, 'id' | 'role'>,
     lectureId: string,
   ): Promise<boolean> {
-    const lecture = await this.prisma.lecture.findUnique({ where: { id: lectureId } });
+    const lecture = await this.prisma.lecture.findFirst({
+      where: { id: lectureId, deletedAt: null },
+    });
     if (!lecture) return false;
     return this.authorization.canAccessLecture(actor, lecture);
   }
 
   /**
    * Validate a QR token and confirm the actor may access its lecture.
+   *
+   * `Lecture.qrExpiresAt` is the only authority. An expired token is rejected
+   * even if the process restarted or the token was seen recently, and the
+   * rotation interval never extends an old code.
    */
   async validateQrToken(token: string, actor?: AuthenticatedUser): Promise<{
     valid: boolean;
@@ -437,32 +593,24 @@ export class LectureService {
     lectureName?: string;
     reason?: string;
   }> {
-    const cached = this.activeTokens.get(token);
-    let lectureId = cached?.lectureId;
-    let lectureName = cached?.lectureName;
-
-    if (cached) {
-      if (Date.now() > cached.expiresAt.getTime()) {
-        this.activeTokens.delete(token);
-        return { valid: false, reason: 'انتهت صلاحية رمز QR. يرجى مسح الرمز الجديد المعروض على الشاشة.' };
-      }
-    } else {
-      const lecture = await this.prisma.lecture.findFirst({
-        where: { qrToken: token },
-      });
-      if (!lecture) {
-        return { valid: false, reason: 'رمز QR غير صالح أو منتهي الصلاحية' };
-      }
-      lectureId = lecture.id;
-      lectureName = lecture.name;
+    const clean = String(token || '').trim();
+    if (!clean) {
+      return { valid: false, reason: 'رمز QR غير صالح أو منتهي الصلاحية' };
     }
 
-    const lecture = await this.prisma.lecture.findUnique({
-      where: { id: lectureId },
+    const lecture = await this.prisma.lecture.findFirst({
+      where: { qrToken: clean, deletedAt: null },
     });
 
     if (!lecture) {
-      return { valid: false, reason: 'المحاضرة غير موجودة' };
+      return { valid: false, reason: 'رمز QR غير صالح أو منتهي الصلاحية' };
+    }
+
+    if (Date.now() > lecture.qrExpiresAt.getTime()) {
+      return {
+        valid: false,
+        reason: 'انتهت صلاحية رمز QR. يرجى مسح الرمز الجديد المعروض على الشاشة.',
+      };
     }
 
     if (lecture.status !== 'ACTIVE') {
@@ -473,7 +621,7 @@ export class LectureService {
       return { valid: false, reason: 'لا تملك صلاحية الوصول إلى هذه المحاضرة' };
     }
 
-    return { valid: true, lectureId: lecture.id, lectureName: lectureName || lecture.name };
+    return { valid: true, lectureId: lecture.id, lectureName: lecture.name };
   }
 
   /**
@@ -484,14 +632,17 @@ export class LectureService {
 
     const interval = setInterval(async () => {
       try {
-        const lecture = await this.prisma.lecture.findUnique({ where: { id: lectureId } });
-        if (!lecture || lecture.status !== 'ACTIVE') {
+        const lecture = await this.prisma.lecture.findUnique({
+          where: { id: lectureId },
+          select: { id: true, name: true, status: true, deletedAt: true },
+        });
+        if (!lecture || lecture.status !== 'ACTIVE' || lecture.deletedAt) {
           this.stopRotation(lectureId);
           return;
         }
 
         const newToken = this.generateToken();
-        const newExpiresAt = new Date(Date.now() + 25 * 1000);
+        const newExpiresAt = new Date(Date.now() + QR_TTL_MS);
 
         await this.prisma.lecture.update({
           where: { id: lectureId },
@@ -500,21 +651,6 @@ export class LectureService {
             qrExpiresAt: newExpiresAt,
           },
         });
-
-        // Store in active cache for 3 minutes
-        this.activeTokens.set(newToken, {
-          lectureId,
-          lectureName: lecture.name,
-          expiresAt: new Date(Date.now() + 180 * 1000),
-        });
-
-        // Purge expired tokens from cache
-        const now = Date.now();
-        for (const [t, info] of this.activeTokens.entries()) {
-          if (info.expiresAt.getTime() < now) {
-            this.activeTokens.delete(t);
-          }
-        }
 
         const localIP = getLocalIP();
         const webPort = process.env.WEB_PORT || 3000;
@@ -525,7 +661,7 @@ export class LectureService {
           expiresAt: newExpiresAt.toISOString(),
           lectureId,
           serverAddress: `http://${localIP}:${webPort}`,
-          availableAddresses: allIPs.map(i => ({
+          availableAddresses: allIPs.map((i) => ({
             name: i.name,
             ip: i.ip,
             url: `http://${i.ip}:${webPort}`,
@@ -534,7 +670,7 @@ export class LectureService {
       } catch (error) {
         this.logger.error(`Failed to rotate QR token for lecture ${lectureId}`, error);
       }
-    }, 22000);
+    }, QR_ROTATION_MS);
 
     this.tokenRotationIntervals.set(lectureId, interval);
     this.logger.log(`Started QR rotation for lecture ${lectureId}`);
@@ -552,11 +688,15 @@ export class LectureService {
   }
 
   /**
-   * Delete a lecture and all its attendance records
+   * Archive a lecture. Attendance records are kept forever; archived lectures
+   * are excluded from listings and from every statistic.
    */
   async deleteLecture(id: string, actor: AuthenticatedUser, ipAddress?: string) {
-    const lecture = await this.prisma.lecture.findUnique({ where: { id } });
-    if (!lecture) {
+    const lecture = await this.prisma.lecture.findUnique({
+      where: { id },
+      include: { course: { select: { id: true, code: true, name: true, stage: true } } },
+    });
+    if (!lecture || lecture.deletedAt) {
       throw new NotFoundException('Lecture not found');
     }
 
@@ -564,30 +704,49 @@ export class LectureService {
       throw new ForbiddenException('لا تملك صلاحية حذف هذه المحاضرة');
     }
 
-    // Stop rotation if active
     this.stopRotation(id);
 
-    // Clean tokens for this lecture
-    for (const [t, info] of this.activeTokens.entries()) {
-      if (info.lectureId === id) {
-        this.activeTokens.delete(t);
-      }
-    }
+    const affected = await this.prisma.attendanceRecord.findMany({
+      where: { lectureId: id, studentId: { not: null } },
+      select: { studentId: true },
+      distinct: ['studentId'],
+    });
+    const recordCount = await this.prisma.attendanceRecord.count({
+      where: { lectureId: id },
+    });
 
-    // Delete attendance records first, then the lecture
-    await this.prisma.attendanceRecord.deleteMany({ where: { lectureId: id } });
-    await this.prisma.lecture.delete({ where: { id } });
+    await this.prisma.$transaction(async (tx) => {
+      await tx.lecture.update({
+        where: { id },
+        data: {
+          deletedAt: new Date(),
+          status: 'CLOSED',
+          closedAt: lecture.closedAt || new Date(),
+        },
+      });
+      await recomputeStudentStats(
+        tx,
+        affected.map((row) => row.studentId),
+      );
+    });
 
     await this.audit.log({
       actorUserId: actor.id,
-      action: 'LECTURE_DELETE',
+      action: 'LECTURE_ARCHIVE',
       entityType: 'Lecture',
       entityId: id,
-      details: lecture.name,
+      details:
+        `${lecture.name} (stage ${lecture.course?.stage ?? '-'}, ` +
+        `${lecture.studyPeriod}, section ${lecture.section || 'ALL'}), ` +
+        `attendanceRecords=${recordCount}`,
       ipAddress,
     });
 
-    this.logger.log(`Lecture deleted: ${id}`);
-    return { success: true };
+    this.logger.log(`Lecture archived: ${id} (records preserved: ${recordCount})`);
+    return {
+      success: true,
+      archived: true,
+      attendanceRecords: recordCount,
+    };
   }
 }

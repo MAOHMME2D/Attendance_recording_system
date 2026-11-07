@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { lectureApi, attendanceApi, studentApi, sectionApi, SectionItem, MORNING_SECTIONS, EVENING_SECTIONS, getWsBase, ApiError } from '../lib/api';
+import { lectureApi, attendanceApi, studentApi, sectionApi, courseApi, SectionItem, CourseItem, stageLabel, getWsBase, ApiError } from '../lib/api';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { io, Socket } from 'socket.io-client';
@@ -43,6 +43,8 @@ function HomeContent() {
   const [selectedSections, setSelectedSections] = useState<string[]>([]); // empty array means ALL sections
   const [isCreating, setIsCreating] = useState(false);
   const [dbSections, setDbSections] = useState<SectionItem[]>([]);
+  const [courses, setCourses] = useState<CourseItem[]>([]);
+  const [courseId, setCourseId] = useState('');
   const [showSectionModal, setShowSectionModal] = useState(false);
   const [showSummaryPdfModal, setShowSummaryPdfModal] = useState(false);
 
@@ -60,16 +62,46 @@ function HomeContent() {
     loadDynamicSections();
   }, [loadDynamicSections]);
 
-  // Sections definitions (dynamic with fallback to MORNING_SECTIONS / EVENING_SECTIONS)
-  const morningSections = dbSections.filter(s => s.studyPeriod === 'MORNING').length > 0
-    ? dbSections.filter(s => s.studyPeriod === 'MORNING').map(s => ({ value: s.name, label: s.label || `الشعبة ${s.name}` }))
-    : MORNING_SECTIONS;
+  // Courses are already scoped server-side: lecturers/technical lecturers get
+  // only the courses assigned to them, administrators get every course.
+  useEffect(() => {
+    courseApi
+      .getAll()
+      .then((data) => {
+        setCourses(data);
+        setCourseId((current) => {
+          if (current && data.some((course) => course.id === current)) return current;
+          return data.length === 1 ? data[0].id : '';
+        });
+      })
+      .catch(() => setCourses([]));
+  }, []);
 
-  const eveningSections = dbSections.filter(s => s.studyPeriod === 'EVENING').length > 0
-    ? dbSections.filter(s => s.studyPeriod === 'EVENING').map(s => ({ value: s.name, label: s.label || `الشعبة ${s.name}` }))
-    : EVENING_SECTIONS;
+  const selectedCourse = courses.find((course) => course.id === courseId) || null;
+  const courseStage = selectedCourse ? selectedCourse.stage : null;
 
-  const availableSections = lectureStudyPeriod === 'MORNING' ? morningSections : eveningSections;
+  // Sections are constrained by the selected course stage (and study period).
+  const stageSections = dbSections.filter(
+    (section) => courseStage === null || section.stage === courseStage,
+  );
+
+  // Pick a meaningful study period when the course only has sections in one of
+  // them (for example stage 2 is evening-only in the current data set).
+  useEffect(() => {
+    if (courseStage === null) return;
+    const matching = dbSections.filter((section) => section.stage === courseStage);
+    if (matching.length === 0) return;
+    setLectureStudyPeriod((current) =>
+      matching.some((section) => section.studyPeriod === current)
+        ? current
+        : (matching[0].studyPeriod as 'MORNING' | 'EVENING'),
+    );
+    setSelectedSections([]);
+  }, [courseStage, dbSections]);
+
+  const availableSections = stageSections
+    .filter((section) => section.studyPeriod === lectureStudyPeriod)
+    .map((section) => ({ value: section.name, label: section.label || `الشعبة ${section.name}` }));
 
   const toggleSection = (secVal: string) => {
     setSelectedSections((prev) => {
@@ -101,6 +133,9 @@ function HomeContent() {
     lectureName: string;
     studyPeriod?: string;
     section?: string;
+    courseCode?: string;
+    courseName?: string;
+    courseStage?: number;
     present: number;
     absent: number;
     total: number;
@@ -212,13 +247,18 @@ function HomeContent() {
   // Create a new lecture
   const handleCreate = async () => {
     if (!lectureName.trim()) return;
+    if (!courseId) {
+      alert('اختر المادة قبل إنشاء المحاضرة');
+      return;
+    }
     setIsCreating(true);
     try {
       const sectionParam = selectedSections.length > 0 ? selectedSections.join(',') : undefined;
       const result = await lectureApi.create(
         lectureName.trim(),
         lectureStudyPeriod,
-        sectionParam
+        sectionParam,
+        courseId,
       );
       setLecture(result);
       setAttendances([]);
@@ -241,6 +281,9 @@ function HomeContent() {
         ...summary,
         studyPeriod: lecture?.studyPeriod,
         section: lecture?.section,
+        courseCode: lecture?.course?.code,
+        courseName: lecture?.course?.name,
+        courseStage: lecture?.course?.stage,
       });
       setLecture((prev: any) => (prev ? { ...prev, status: 'CLOSED' } : null));
       setSummaryTab(summary.absent > 0 ? 'absent' : 'present');
@@ -427,6 +470,51 @@ function HomeContent() {
             </p>
 
             <div style={{ background: '#FFFFFF', padding: '24px', borderRadius: '18px', border: '1px solid #E5E7EB', boxShadow: '0 4px 20px rgba(0,0,0,0.04)', textAlign: 'right' }}>
+              {/* Course Selection */}
+              <div style={{ marginBottom: '16px' }}>
+                <label style={{ display: 'block', fontSize: '13px', fontWeight: '700', color: '#374151', marginBottom: '6px' }}>
+                  المادة الدراسية:
+                </label>
+                <select
+                  className="input"
+                  value={courseId}
+                  onChange={(e) => {
+                    const value = e.target.value;
+                    setCourseId(value);
+                    setSelectedSections([]);
+                    const picked = courses.find((course) => course.id === value);
+                    if (picked) {
+                      setLectureName((current) => {
+                        const trimmed = current.trim();
+                        if (!trimmed || courses.some((course) => course.name === trimmed)) {
+                          return picked.name;
+                        }
+                        return current;
+                      });
+                    }
+                  }}
+                  style={{ fontSize: '14px', fontWeight: '700', width: '100%', padding: '11px 14px' }}
+                >
+                  <option value="">اختر المادة...</option>
+                  {courses.map((course) => (
+                    <option key={course.id} value={course.id}>
+                      {stageLabel(course.stage)} — {course.code} — {course.name}
+                    </option>
+                  ))}
+                </select>
+                {courses.length === 0 ? (
+                  <div style={{ marginTop: '6px', fontSize: '12px', color: '#B45309', fontWeight: '600' }}>
+                    لم تُسند إليك أي مادة بعد. راجع إدارة التعيينات أو اطلب من رئيس القسم إسناد موادك.
+                  </div>
+                ) : (
+                  <div style={{ marginTop: '6px', fontSize: '12px', color: '#6B7280' }}>
+                    {selectedCourse
+                      ? `${stageLabel(selectedCourse.stage)} · رمز المادة ${selectedCourse.code}`
+                      : 'اختر المادة قبل بدء المحاضرة'}
+                  </div>
+                )}
+              </div>
+
               {/* Study Period Selection */}
               <div style={{ marginBottom: '16px' }}>
                 <label style={{ display: 'block', fontSize: '13px', fontWeight: '700', color: '#374151', marginBottom: '6px' }}>
@@ -533,7 +621,25 @@ function HomeContent() {
                 </div>
 
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(130px, 1fr))', gap: '8px' }}>
-                  {availableSections.map((sec) => {
+                  {availableSections.length === 0 ? (
+                    <div
+                      style={{
+                        gridColumn: '1 / -1',
+                        padding: '12px 14px',
+                        borderRadius: '10px',
+                        background: '#FFFBEB',
+                        border: '1px solid #FCD34D',
+                        color: '#92400E',
+                        fontSize: '12.5px',
+                        fontWeight: '600',
+                      }}
+                    >
+                      لا توجد شعب مسجّلة لهذه المرحلة في{' '}
+                      {lectureStudyPeriod === 'MORNING' ? 'الدراسة الصباحية' : 'الدراسة المسائية'}.
+                      أضف الشعب من «إدارة الشُعب» أو اختر نوع دراسة آخر.
+                    </div>
+                  ) : (
+                    availableSections.map((sec) => {
                     const isSelected = selectedSections.includes(sec.value);
                     return (
                       <button
@@ -583,14 +689,16 @@ function HomeContent() {
                         </span>
                       </button>
                     );
-                  })}
+                    })
+                  )}
                 </div>
 
                 {/* Selection Summary */}
                 <div style={{ fontSize: '12px', color: '#6B7280', marginTop: '10px', background: '#F9FAFB', padding: '8px 12px', borderRadius: '8px', border: '1px solid #F3F4F6' }}>
                   {selectedSections.length === 0 ? (
                     <span style={{ color: '#059669', fontWeight: '600' }}>
-                      ✓ سيتم شمول كافة شُعب {lectureStudyPeriod === 'MORNING' ? 'الصباحي (1 - 3)' : 'المسائي (1 - 8)'} معاً في هذه المحاضرة
+                      ✓ سيتم شمول كافة شُعب {selectedCourse ? `${stageLabel(selectedCourse.stage)} ` : ''}
+                      {lectureStudyPeriod === 'MORNING' ? 'الصباحية' : 'المسائية'} معاً في هذه المحاضرة
                     </span>
                   ) : (
                     <span>
@@ -603,12 +711,12 @@ function HomeContent() {
               {/* Lecture Name Input */}
               <div style={{ marginBottom: '20px' }}>
                 <label style={{ display: 'block', fontSize: '13px', fontWeight: '700', color: '#374151', marginBottom: '6px' }}>
-                  اسم المادة / المحاضرة:
+                  اسم المحاضرة / العنوان:
                 </label>
                 <input
                   type="text"
                   className="input"
-                  placeholder="مثال: الكيمياء السريرية، الأحياء المجهرية، أمراض الدم..."
+                  placeholder="مثال: محاضرة 1 — الكيمياء السريرية"
                   value={lectureName}
                   onChange={(e) => setLectureName(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && handleCreate()}
@@ -621,7 +729,7 @@ function HomeContent() {
               <button
                 className="btn btn-primary"
                 onClick={handleCreate}
-                disabled={isCreating || !lectureName.trim()}
+                disabled={isCreating || !lectureName.trim() || !courseId}
                 style={{ width: '100%', fontSize: '15px', fontWeight: '800', padding: '12px 20px' }}
                 id="create-lecture-btn"
               >
@@ -655,6 +763,21 @@ function HomeContent() {
                   <h1 style={{ fontSize: '22px', fontWeight: '800', color: '#111827', margin: 0 }}>
                     {lecture.name}
                   </h1>
+                  {lecture.course && (
+                    <span
+                      style={{
+                        padding: '3px 10px',
+                        borderRadius: '6px',
+                        fontSize: '11px',
+                        fontWeight: '700',
+                        background: '#FEF3C7',
+                        color: '#92400E',
+                        border: '1px solid #FCD34D',
+                      }}
+                    >
+                      {stageLabel(lecture.course.stage)} · {lecture.course.code} — {lecture.course.name}
+                    </span>
+                  )}
                   <span
                     style={{
                       padding: '3px 10px',
@@ -737,6 +860,7 @@ function HomeContent() {
 
             {/* Main Grid: Direct Camera Scanner + Attendance List */}
             <div
+              className="lecture-main-grid"
               style={{
                 display: 'grid',
                 gridTemplateColumns: lecture.status === 'ACTIVE' ? 'minmax(420px, 480px) 1fr' : '1fr',
@@ -1139,6 +1263,13 @@ function HomeContent() {
                   <p style={{ color: 'var(--text-secondary)', fontSize: '14px', marginTop: '4px' }}>
                     {closedSummary.lectureName} • تم توثيق الحضور وتثبيت غياب بقية الطلاب
                   </p>
+                  {(closedSummary.courseCode || closedSummary.courseName) && (
+                    <p style={{ color: '#92400E', fontSize: '12.5px', marginTop: '4px', fontWeight: '700' }}>
+                      {closedSummary.courseStage ? `${stageLabel(closedSummary.courseStage)} · ` : ''}
+                      {closedSummary.courseCode || ''}
+                      {closedSummary.courseName ? ` — ${closedSummary.courseName}` : ''}
+                    </p>
+                  )}
                 </div>
                 <button
                   className="btn btn-ghost btn-sm"
@@ -1310,6 +1441,7 @@ function HomeContent() {
           onClose={() => setShowSectionModal(false)}
           onSectionsChanged={loadDynamicSections}
           initialPeriod={lectureStudyPeriod}
+          initialStage={courseStage ?? 2}
         />
 
         {/* Closed Lecture Attendance & Absences PDF Modal */}

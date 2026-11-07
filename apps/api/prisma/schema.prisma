@@ -1,6 +1,6 @@
 // RUNTIME DATABASE IS POSTGRESQL.
 // Migrations live in prisma/migrations/ (0001_init, 0002_online_foundation,
-// 0003_staff_management).
+// 0003_staff_management, 0004_phase2_academics).
 // See docs/POSTGRES_MIGRATION.md.
 datasource db {
   provider = "postgresql"
@@ -16,6 +16,7 @@ model Lecture {
   name              String
   studyPeriod       String   @default("MORNING")
   section           String?
+  courseId          String?
   status            String   @default("ACTIVE")
   qrToken           String   @unique
   qrExpiresAt       DateTime
@@ -23,14 +24,19 @@ model Lecture {
   conductedByUserId String?
   startedAt         DateTime @default(now())
   closedAt          DateTime?
+  /// Soft-delete marker: archived lectures keep their attendance records.
+  deletedAt         DateTime?
   createdAt         DateTime @default(now())
 
   attendances AttendanceRecord[]
+  course      Course?          @relation(fields: [courseId], references: [id], onDelete: SetNull)
   createdBy   StaffUser?       @relation("LectureCreator", fields: [createdByUserId], references: [id], onDelete: SetNull)
   conductedBy StaffUser?       @relation("LectureConductor", fields: [conductedByUserId], references: [id], onDelete: SetNull)
 
   @@index([createdByUserId])
   @@index([conductedByUserId])
+  @@index([courseId])
+  @@index([deletedAt])
 }
 
 model Student {
@@ -38,17 +44,24 @@ model Student {
   orderIndex    Int?
   studentCode   String   @unique
   name          String
+  stage         Int      @default(2)
   studyPeriod   String   @default("MORNING")
   section       String?
+  sectionId     String?
   presentCount  Int      @default(0)
   absentCount   Int      @default(0)
   totalSessions Int?
   rate          Float?
+  deletedAt     DateTime?
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
   attendances AttendanceRecord[]
   qrTokens    StudentQrToken[]
+  sectionRef  Section?         @relation(fields: [sectionId], references: [id], onDelete: SetNull)
+
+  @@index([stage, sectionId])
+  @@index([deletedAt])
 }
 
 model AttendanceRecord {
@@ -66,17 +79,58 @@ model AttendanceRecord {
   lecture Lecture  @relation(fields: [lectureId], references: [id])
   student Student? @relation(fields: [studentId], references: [id], onDelete: SetNull)
 
-  @@unique([lectureId, studentName])
+  // Identity is the student row, never the display name: two students may
+  // share a name in the same section. Legacy rows with a NULL studentId are
+  // allowed because PostgreSQL treats NULLs as distinct in unique indexes.
+  @@unique([lectureId, studentId])
+  @@index([studentId])
 }
 
 model Section {
   id          String   @id @default(uuid())
+  stage       Int      @default(2)
   studyPeriod String   @default("MORNING")
   name        String
   label       String?
   createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 
-  @@unique([studyPeriod, name])
+  students Student[]
+
+  @@unique([stage, studyPeriod, name])
+  @@index([stage, studyPeriod])
+}
+
+/// Academic subject. A course belongs to one stage; sections are chosen when a
+/// lecture is created and lecturers are assigned to the course itself.
+model Course {
+  id          String   @id @default(uuid())
+  code        String
+  name        String
+  stage       Int
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  lectures    Lecture[]
+  assignments TeachingAssignment[]
+
+  @@unique([stage, code])
+  @@index([stage])
+}
+
+/// Grants a lecturer (or technical lecturer) permission to teach a course.
+model TeachingAssignment {
+  id          String   @id @default(uuid())
+  staffUserId String
+  courseId    String
+  createdAt   DateTime @default(now())
+
+  staffUser StaffUser @relation(fields: [staffUserId], references: [id], onDelete: Cascade)
+  course    Course    @relation(fields: [courseId], references: [id], onDelete: Cascade)
+
+  @@unique([staffUserId, courseId])
+  @@index([courseId])
 }
 
 model StaffUser {
@@ -97,6 +151,7 @@ model StaffUser {
   createdLectures   Lecture[]       @relation("LectureCreator")
   conductedLectures Lecture[]       @relation("LectureConductor")
   createdQrTokens   StudentQrToken[]
+  assignments       TeachingAssignment[]
 }
 
 model StaffSession {

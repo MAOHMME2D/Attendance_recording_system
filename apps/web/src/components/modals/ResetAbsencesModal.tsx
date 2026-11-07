@@ -1,7 +1,13 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
-import { studentApi, sectionApi, SectionItem } from '../../lib/api';
+import {
+  ACADEMIC_STAGES,
+  STAGE_LABELS,
+  studentApi,
+  sectionApi,
+  SectionItem,
+} from '../../lib/api';
 
 interface ResetAbsencesModalProps {
   isOpen: boolean;
@@ -9,7 +15,12 @@ interface ResetAbsencesModalProps {
   onSuccess: (message: string) => void;
   currentStudyPeriod?: string;
   currentSection?: string;
+  currentSectionId?: string;
+  currentStage?: number;
 }
+
+type ResetScope = 'STAGE' | 'PERIOD' | 'SECTION';
+type StudyPeriod = 'MORNING' | 'EVENING';
 
 export default function ResetAbsencesModal({
   isOpen,
@@ -17,10 +28,19 @@ export default function ResetAbsencesModal({
   onSuccess,
   currentStudyPeriod,
   currentSection,
+  currentSectionId,
+  currentStage,
 }: ResetAbsencesModalProps) {
-  const [scope, setScope] = useState<'ALL' | 'PERIOD' | 'SECTION'>('PERIOD');
-  const [studyPeriod, setStudyPeriod] = useState<string>(currentStudyPeriod || 'MORNING');
-  const [section, setSection] = useState<string>(currentSection || '');
+  // A stage is always required: the backend rejects an unscoped reset so a
+  // cleanup for one stage can never silently zero another stage.
+  const [scope, setScope] = useState<ResetScope>('PERIOD');
+  const [stage, setStage] = useState<number>(
+    currentStage && ACADEMIC_STAGES.includes(currentStage as any) ? currentStage : 2,
+  );
+  const [studyPeriod, setStudyPeriod] = useState<StudyPeriod>(
+    currentStudyPeriod === 'EVENING' ? 'EVENING' : 'MORNING',
+  );
+  const [sectionId, setSectionId] = useState<string>(currentSectionId || '');
   const [resetType, setResetType] = useState<'ABSENCES_ONLY' | 'ALL_ATTENDANCE'>('ABSENCES_ONLY');
   const [sections, setSections] = useState<SectionItem[]>([]);
   const [loading, setLoading] = useState(false);
@@ -29,10 +49,17 @@ export default function ResetAbsencesModal({
 
   useEffect(() => {
     if (isOpen) {
-      if (currentStudyPeriod) setStudyPeriod(currentStudyPeriod);
-      if (currentSection && currentSection !== 'ALL') {
+      if (currentStudyPeriod === 'EVENING' || currentStudyPeriod === 'MORNING') {
+        setStudyPeriod(currentStudyPeriod);
+      }
+      if (currentStage && ACADEMIC_STAGES.includes(currentStage as any)) {
+        setStage(currentStage);
+      }
+      if (currentSectionId) {
         setScope('SECTION');
-        setSection(currentSection);
+        setSectionId(currentSectionId);
+      } else {
+        setSectionId('');
       }
       setConfirmText('');
       setError(null);
@@ -43,11 +70,36 @@ export default function ResetAbsencesModal({
         .then((data) => setSections(data))
         .catch(() => {});
     }
-  }, [isOpen, currentStudyPeriod, currentSection]);
+  }, [isOpen, currentStudyPeriod, currentSection, currentSectionId, currentStage]);
 
   if (!isOpen) return null;
 
-  const filteredSections = sections.filter((s) => s.studyPeriod === studyPeriod);
+  const filteredSections = sections.filter(
+    (section) => section.stage === stage && section.studyPeriod === studyPeriod,
+  );
+
+  const selectedSection = sections.find((section) => section.id === sectionId) || null;
+  const legacySectionMatch =
+    !selectedSection && currentSection
+      ? sections.find(
+          (section) =>
+            section.stage === stage &&
+            section.studyPeriod === studyPeriod &&
+            section.name === currentSection,
+        ) || null
+      : null;
+  const effectiveSection = selectedSection || legacySectionMatch;
+
+  const scopeSummary =
+    scope === 'SECTION'
+      ? `${STAGE_LABELS[stage as keyof typeof STAGE_LABELS]} — ${
+          studyPeriod === 'EVENING' ? 'مسائي' : 'صباحي'
+        } — ${effectiveSection?.label || effectiveSection?.name || 'اختر شعبة'}`
+      : scope === 'PERIOD'
+        ? `${STAGE_LABELS[stage as keyof typeof STAGE_LABELS]} — ${
+            studyPeriod === 'EVENING' ? 'مسائي' : 'صباحي'
+          }`
+        : `${STAGE_LABELS[stage as keyof typeof STAGE_LABELS]} — كل الشعب`;
 
   const handleReset = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -57,19 +109,30 @@ export default function ResetAbsencesModal({
       return;
     }
 
+    if (scope === 'SECTION' && !sectionId) {
+      setError('يرجى اختيار الشعبة أولاً');
+      return;
+    }
+
     setLoading(true);
     setError(null);
 
     try {
-      const payload: any = {
+      const payload: {
+        stage: number;
+        studyPeriod?: StudyPeriod;
+        sectionId?: string;
+        resetType: 'ABSENCES_ONLY' | 'ALL_ATTENDANCE';
+      } = {
+        stage,
         resetType,
       };
 
-      if (scope === 'PERIOD') {
+      if (scope === 'PERIOD' || scope === 'SECTION') {
         payload.studyPeriod = studyPeriod;
-      } else if (scope === 'SECTION') {
-        payload.studyPeriod = studyPeriod;
-        payload.section = section;
+      }
+      if (scope === 'SECTION') {
+        payload.sectionId = sectionId;
       }
 
       const res = await studentApi.resetAbsences(payload);
@@ -191,6 +254,22 @@ export default function ResetAbsencesModal({
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '8px' }}>
               <button
                 type="button"
+                onClick={() => setScope('STAGE')}
+                style={{
+                  padding: '8px',
+                  borderRadius: '8px',
+                  border: scope === 'STAGE' ? '2px solid #DC2626' : '1px solid #D1D5DB',
+                  background: scope === 'STAGE' ? '#FEF2F2' : '#FFFFFF',
+                  color: scope === 'STAGE' ? '#991B1B' : '#4B5563',
+                  fontSize: '12px',
+                  fontWeight: '600',
+                  cursor: 'pointer',
+                }}
+              >
+                كل شعب المرحلة
+              </button>
+              <button
+                type="button"
                 onClick={() => setScope('PERIOD')}
                 style={{
                   padding: '8px',
@@ -221,27 +300,39 @@ export default function ResetAbsencesModal({
               >
                 شعبة محددة
               </button>
-              <button
-                type="button"
-                onClick={() => setScope('ALL')}
-                style={{
-                  padding: '8px',
-                  borderRadius: '8px',
-                  border: scope === 'ALL' ? '2px solid #DC2626' : '1px solid #D1D5DB',
-                  background: scope === 'ALL' ? '#FEF2F2' : '#FFFFFF',
-                  color: scope === 'ALL' ? '#991B1B' : '#4B5563',
-                  fontSize: '12px',
-                  fontWeight: '600',
-                  cursor: 'pointer',
-                }}
-              >
-                الكل (عام)
-              </button>
             </div>
           </div>
 
-          {/* Period Selection (if scope is not ALL) */}
-          {scope !== 'ALL' && (
+          {/* Stage Selection (always required) */}
+          <div style={{ marginBottom: '14px' }}>
+            <label style={{ display: 'block', fontSize: '13px', fontWeight: '500', color: '#4B5563', marginBottom: '6px' }}>
+              المرحلة:
+            </label>
+            <select
+              value={stage}
+              onChange={(e) => {
+                setStage(Number(e.target.value));
+                setSectionId('');
+              }}
+              style={{
+                width: '100%',
+                padding: '9px 12px',
+                borderRadius: '8px',
+                border: '1px solid #D1D5DB',
+                fontSize: '14px',
+                outline: 'none',
+              }}
+            >
+              {ACADEMIC_STAGES.map((value) => (
+                <option key={value} value={value}>
+                  {STAGE_LABELS[value]}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* Period Selection (stage scope covers every period in that stage) */}
+          {scope !== 'STAGE' && (
             <div style={{ marginBottom: '14px' }}>
               <label style={{ display: 'block', fontSize: '13px', fontWeight: '500', color: '#4B5563', marginBottom: '6px' }}>
                 الدراسة:
@@ -249,8 +340,8 @@ export default function ResetAbsencesModal({
               <select
                 value={studyPeriod}
                 onChange={(e) => {
-                  setStudyPeriod(e.target.value);
-                  setSection('');
+                  setStudyPeriod(e.target.value as StudyPeriod);
+                  setSectionId('');
                 }}
                 style={{
                   width: '100%',
@@ -274,8 +365,8 @@ export default function ResetAbsencesModal({
                 الشعبة:
               </label>
               <select
-                value={section}
-                onChange={(e) => setSection(e.target.value)}
+                value={sectionId}
+                onChange={(e) => setSectionId(e.target.value)}
                 required
                 style={{
                   width: '100%',
@@ -288,13 +379,33 @@ export default function ResetAbsencesModal({
               >
                 <option value="">-- اختر الشعبة --</option>
                 {filteredSections.map((s) => (
-                  <option key={s.id} value={s.name}>
+                  <option key={s.id} value={s.id}>
                     {s.label || `الشعبة ${s.name}`}
                   </option>
                 ))}
               </select>
+              {filteredSections.length === 0 && (
+                <p style={{ marginTop: '6px', fontSize: '12px', color: '#B45309' }}>
+                  لا توجد شعب مسجلة لهذه المرحلة والدراسة.
+                </p>
+              )}
             </div>
           )}
+
+          {/* Scope summary */}
+          <div
+            style={{
+              padding: '10px 12px',
+              borderRadius: '8px',
+              background: '#F9FAFB',
+              border: '1px solid #E5E7EB',
+              marginBottom: '16px',
+              fontSize: '12.5px',
+              color: '#374151',
+            }}
+          >
+            <strong>سيتم التصفير ضمن:</strong> {scopeSummary}
+          </div>
 
           {/* Reset Type */}
           <div style={{ marginBottom: '18px' }}>
@@ -446,4 +557,3 @@ export default function ResetAbsencesModal({
     </div>
   );
 }
-

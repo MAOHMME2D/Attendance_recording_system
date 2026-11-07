@@ -180,6 +180,56 @@ export default function StaffPage() {
       ? member.role === 'LECTURER' || member.role === 'TECHNICAL_LECTURER'
       : true);
 
+  const actionsFor = (member: ManagedStaff) => {
+    const editable = canEditMember(member);
+    const isOwner = member.role === 'SYSTEM_OWNER';
+    const isSelf = member.id === user?.id;
+
+    if (isOwner) {
+      return (
+        <span style={{ color: '#6B7280', fontSize: '12px' }}>
+          حساب محمي — يُدار عبر CLI فقط
+        </span>
+      );
+    }
+    if (!editable) {
+      return <span style={{ color: '#9CA3AF', fontSize: '12px' }}>خارج نطاق صلاحيتك</span>;
+    }
+    return (
+      <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+        <button
+          type="button"
+          className="btn btn-ghost btn-sm"
+          onClick={() => startEdit(member)}
+          disabled={busy}
+        >
+          تعديل
+        </button>
+        <button
+          type="button"
+          className="btn btn-ghost btn-sm"
+          onClick={() => {
+            clearMessages();
+            setResetTarget(member);
+            setNewPassword('');
+          }}
+          disabled={busy}
+        >
+          كلمة المرور
+        </button>
+        <button
+          type="button"
+          className={member.isActive ? 'btn btn-danger btn-sm' : 'btn btn-success btn-sm'}
+          onClick={() => toggleActive(member)}
+          disabled={busy || isSelf}
+          title={isSelf ? 'لا يمكنك تعطيل حسابك الحالي' : undefined}
+        >
+          {member.isActive ? 'تعطيل' : 'تفعيل'}
+        </button>
+      </div>
+    );
+  };
+
   return (
     <div style={{ minHeight: '100vh', background: 'var(--bg-primary)' }}>
       <Navbar />
@@ -440,101 +490,124 @@ export default function StaffPage() {
           </section>
         )}
 
-        <section className="glass-card" style={{ padding: '8px 0', overflowX: 'auto' }}>
+        <section className="glass-card" style={{ padding: '8px 0' }}>
           {loading ? (
             <p style={{ padding: '24px', color: '#6B7280' }}>جارٍ تحميل الموظفين...</p>
           ) : staff.length === 0 ? (
             <p style={{ padding: '24px', color: '#6B7280' }}>لا توجد حسابات موظفين بعد.</p>
           ) : (
-            <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: '760px' }}>
-              <thead>
-                <tr style={{ textAlign: 'right', color: '#6B7280', fontSize: '12.5px' }}>
-                  <th style={{ padding: '12px 18px', fontWeight: 700 }}>الاسم</th>
-                  <th style={{ padding: '12px 10px', fontWeight: 700 }}>المعرف</th>
-                  <th style={{ padding: '12px 10px', fontWeight: 700 }}>الصلاحية</th>
-                  <th style={{ padding: '12px 10px', fontWeight: 700 }}>الحالة</th>
-                  <th style={{ padding: '12px 10px', fontWeight: 700 }}>آخر دخول</th>
-                  <th style={{ padding: '12px 10px', fontWeight: 700 }}>الإجراءات</th>
-                </tr>
-              </thead>
-              <tbody>
+            <>
+              <div className="staff-table-scroll">
+                <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: '720px' }}>
+                  <thead>
+                    <tr style={{ textAlign: 'right', color: '#6B7280', fontSize: '12.5px' }}>
+                      <th style={{ padding: '12px 18px', fontWeight: 700 }}>الاسم</th>
+                      <th style={{ padding: '12px 10px', fontWeight: 700 }}>المعرف</th>
+                      <th style={{ padding: '12px 10px', fontWeight: 700 }}>الصلاحية</th>
+                      <th style={{ padding: '12px 10px', fontWeight: 700 }}>الحالة</th>
+                      <th style={{ padding: '12px 10px', fontWeight: 700 }}>آخر دخول</th>
+                      <th style={{ padding: '12px 10px', fontWeight: 700 }}>الإجراءات</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {staff.map((member) => {
+                      const isSelf = member.id === user?.id;
+                      return (
+                        <tr
+                          key={member.id}
+                          style={{ borderTop: '1px solid #F3F4F6', fontSize: '13px' }}
+                        >
+                          <td style={{ padding: '14px 18px', fontWeight: 700 }}>
+                            {member.fullName}
+                            {isSelf && (
+                              <span style={{ marginInlineStart: '6px', color: '#6B7280', fontWeight: 500 }}>
+                                (حسابك)
+                              </span>
+                            )}
+                          </td>
+                          <td style={{ padding: '14px 10px', direction: 'ltr', textAlign: 'right' }}>
+                            {member.staffId}
+                          </td>
+                          <td style={{ padding: '14px 10px' }}>{ROLE_LABELS[member.role] || member.role}</td>
+                          <td style={{ padding: '14px 10px' }}>
+                            <span
+                              className={`badge ${member.isActive ? 'badge-active' : 'badge-closed'}`}
+                            >
+                              {member.isActive ? 'فعّال' : 'معطّل'}
+                            </span>
+                          </td>
+                          <td style={{ padding: '14px 10px', color: '#6B7280' }}>
+                            {formatDate(member.lastLoginAt)}
+                          </td>
+                          <td style={{ padding: '14px 10px' }}>{actionsFor(member)}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* Phones/tablets: a card per member instead of a clipped table. */}
+              <div className="staff-mobile-list">
                 {staff.map((member) => {
-                  const editable = canEditMember(member);
-                  const isOwner = member.role === 'SYSTEM_OWNER';
                   const isSelf = member.id === user?.id;
                   return (
-                    <tr
+                    <div
                       key={member.id}
-                      style={{ borderTop: '1px solid #F3F4F6', fontSize: '13px' }}
+                      style={{
+                        border: '1px solid #E5E7EB',
+                        borderRadius: '12px',
+                        padding: '12px 14px',
+                        background: '#FFFFFF',
+                      }}
                     >
-                      <td style={{ padding: '14px 18px', fontWeight: 700 }}>
-                        {member.fullName}
-                        {isSelf && (
-                          <span style={{ marginInlineStart: '6px', color: '#6B7280', fontWeight: 500 }}>
-                            (حسابك)
-                          </span>
-                        )}
-                      </td>
-                      <td style={{ padding: '14px 10px', direction: 'ltr', textAlign: 'right' }}>
-                        {member.staffId}
-                      </td>
-                      <td style={{ padding: '14px 10px' }}>{ROLE_LABELS[member.role] || member.role}</td>
-                      <td style={{ padding: '14px 10px' }}>
+                      <div
+                        style={{
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          gap: '10px',
+                          alignItems: 'flex-start',
+                        }}
+                      >
+                        <div style={{ minWidth: 0 }}>
+                          <div style={{ fontSize: '14.5px', fontWeight: 800, color: '#111827' }}>
+                            {member.fullName}
+                            {isSelf && (
+                              <span style={{ marginInlineStart: '6px', color: '#6B7280', fontWeight: 500, fontSize: '12px' }}>
+                                (حسابك)
+                              </span>
+                            )}
+                          </div>
+                          <div
+                            style={{
+                              direction: 'ltr',
+                              textAlign: 'right',
+                              fontSize: '12px',
+                              color: '#6B7280',
+                              marginTop: '2px',
+                            }}
+                          >
+                            {member.staffId}
+                          </div>
+                        </div>
                         <span
                           className={`badge ${member.isActive ? 'badge-active' : 'badge-closed'}`}
                         >
                           {member.isActive ? 'فعّال' : 'معطّل'}
                         </span>
-                      </td>
-                      <td style={{ padding: '14px 10px', color: '#6B7280' }}>
-                        {formatDate(member.lastLoginAt)}
-                      </td>
-                      <td style={{ padding: '14px 10px' }}>
-                        {isOwner ? (
-                          <span style={{ color: '#6B7280', fontSize: '12px' }}>
-                            حساب محمي — يُدار عبر CLI فقط
-                          </span>
-                        ) : editable ? (
-                          <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
-                            <button
-                              type="button"
-                              className="btn btn-ghost btn-sm"
-                              onClick={() => startEdit(member)}
-                              disabled={busy}
-                            >
-                              تعديل
-                            </button>
-                            <button
-                              type="button"
-                              className="btn btn-ghost btn-sm"
-                              onClick={() => {
-                                clearMessages();
-                                setResetTarget(member);
-                                setNewPassword('');
-                              }}
-                              disabled={busy}
-                            >
-                              كلمة المرور
-                            </button>
-                            <button
-                              type="button"
-                              className={member.isActive ? 'btn btn-danger btn-sm' : 'btn btn-success btn-sm'}
-                              onClick={() => toggleActive(member)}
-                              disabled={busy || isSelf}
-                              title={isSelf ? 'لا يمكنك تعطيل حسابك الحالي' : undefined}
-                            >
-                              {member.isActive ? 'تعطيل' : 'تفعيل'}
-                            </button>
-                          </div>
-                        ) : (
-                          <span style={{ color: '#9CA3AF', fontSize: '12px' }}>خارج نطاق صلاحيتك</span>
-                        )}
-                      </td>
-                    </tr>
+                      </div>
+                      <div style={{ fontSize: '12.5px', color: '#4B5563', marginTop: '8px' }}>
+                        {ROLE_LABELS[member.role] || member.role}
+                      </div>
+                      <div style={{ fontSize: '12px', color: '#6B7280', marginTop: '2px' }}>
+                        آخر دخول: {formatDate(member.lastLoginAt)}
+                      </div>
+                      <div style={{ marginTop: '10px' }}>{actionsFor(member)}</div>
+                    </div>
                   );
                 })}
-              </tbody>
-            </table>
+              </div>
+            </>
           )}
         </section>
 
@@ -544,6 +617,29 @@ export default function StaffPage() {
           حساب رئيس القسم أو حساب مالك النظام التجريبي.
         </p>
       </main>
+
+      <style jsx>{`
+        .staff-table-scroll {
+          width: 100%;
+          max-width: 100%;
+          overflow-x: auto;
+          -webkit-overflow-scrolling: touch;
+        }
+        .staff-mobile-list {
+          display: none;
+          flex-direction: column;
+          gap: 10px;
+          padding: 8px 12px;
+        }
+        @media (max-width: 720px) {
+          .staff-table-scroll {
+            display: none;
+          }
+          .staff-mobile-list {
+            display: flex;
+          }
+        }
+      `}</style>
     </div>
   );
 }
