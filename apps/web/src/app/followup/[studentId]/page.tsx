@@ -177,15 +177,30 @@ export default function FollowupStudentPage() {
                           fontWeight: '800',
                           whiteSpace: 'nowrap',
                           background:
-                            lecture.status === 'PRESENT' ? '#ECFDF5' : '#FEF2F2',
+                            lecture.status !== 'PRESENT'
+                              ? '#FEF2F2'
+                              : lecture.note && lecture.note.startsWith('حاضر عبر')
+                                ? '#F5F3FF'
+                                : '#ECFDF5',
                           border:
-                            lecture.status === 'PRESENT'
-                              ? '1px solid #A7F3D0'
-                              : '1px solid #FCA5A5',
-                          color: lecture.status === 'PRESENT' ? '#065F46' : '#B91C1C',
+                            lecture.status !== 'PRESENT'
+                              ? '1px solid #FCA5A5'
+                              : lecture.note && lecture.note.startsWith('حاضر عبر')
+                                ? '1px solid #DDD6FE'
+                                : '1px solid #A7F3D0',
+                          color:
+                            lecture.status !== 'PRESENT'
+                              ? '#B91C1C'
+                              : lecture.note && lecture.note.startsWith('حاضر عبر')
+                                ? '#6D28D9'
+                                : '#065F46',
                         }}
                       >
-                        {lecture.status === 'PRESENT' ? 'حاضر' : 'غائب'}
+                        {lecture.status === 'PRESENT'
+                          ? lecture.note && lecture.note.startsWith('حاضر عبر')
+                            ? 'حاضر (شعبة أخرى)'
+                            : 'حاضر'
+                          : 'غائب'}
                       </span>
                     </div>
                   </div>

@@ -7,20 +7,24 @@ import {
   courseApi,
   sectionApi,
   staffApi,
+  timetableApi,
   ACADEMIC_STAGES,
   STAGE_LABELS,
   STAGE_OPTIONS,
   STUDY_PERIODS,
+  TIMETABLE_DAYS,
   stageLabel,
   type AssignmentItem,
   type CourseItem,
   type ManagedStaff,
   type SectionItem,
   type StaffRole,
+  type TimetableInput,
+  type TimetableItem,
 } from '../../lib/api';
 import { useAuth, PERMISSIONS, ROLE_LABELS } from '../../lib/auth';
 
-type Tab = 'sections' | 'courses' | 'assignments';
+type Tab = 'sections' | 'courses' | 'assignments' | 'timetable';
 
 const PERIOD_LABELS: Record<string, string> = {
   MORNING: 'صباحي',
@@ -41,14 +45,17 @@ export default function AcademicsPage() {
   const canManageCourses = can(PERMISSIONS.COURSES_MANAGE);
   const canViewAssignments = can(PERMISSIONS.ASSIGNMENTS_VIEW);
   const canManageAssignments = can(PERMISSIONS.ASSIGNMENTS_MANAGE);
+  const canViewTimetable = can(PERMISSIONS.TIMETABLE_VIEW);
+  const canManageTimetable = can(PERMISSIONS.TIMETABLE_MANAGE);
 
   const tabs = useMemo(() => {
     const list: Array<{ id: Tab; label: string }> = [];
     if (canViewSections) list.push({ id: 'sections', label: 'الشعب' });
     if (canViewCourses) list.push({ id: 'courses', label: 'المواد' });
     if (canViewAssignments) list.push({ id: 'assignments', label: 'التعيينات' });
+    if (canViewTimetable) list.push({ id: 'timetable', label: 'الجدول' });
     return list;
-  }, [canViewSections, canViewCourses, canViewAssignments]);
+  }, [canViewSections, canViewCourses, canViewAssignments, canViewTimetable]);
 
   const [activeTab, setActiveTab] = useState<Tab>(tabs[0]?.id || 'sections');
   const [stageFilter, setStageFilter] = useState<string>('');
@@ -61,6 +68,19 @@ export default function AcademicsPage() {
   const [courses, setCourses] = useState<CourseItem[]>([]);
   const [assignments, setAssignments] = useState<AssignmentItem[]>([]);
   const [staff, setStaff] = useState<ManagedStaff[]>([]);
+  const [timetableEntries, setTimetableEntries] = useState<TimetableItem[]>([]);
+  const [timetableForm, setTimetableForm] = useState<TimetableInput>({
+    courseId: '',
+    sectionId: '',
+    dayOfWeek: 0,
+    startTime: '08:00',
+    endTime: '09:30',
+  });
+  const [timetableFilter, setTimetableFilter] = useState<{
+    courseId: string;
+    sectionId: string;
+    dayOfWeek: string;
+  }>({ courseId: '', sectionId: '', dayOfWeek: '' });
 
   // Section form
   const [sectionForm, setSectionForm] = useState({
@@ -140,15 +160,40 @@ export default function AcademicsPage() {
     }
   }, []);
 
+  const loadTimetable = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const [entries, courseData, sectionData] = await Promise.all([
+        timetableApi.getAll({
+          courseId: timetableFilter.courseId || undefined,
+          sectionId: timetableFilter.sectionId || undefined,
+          dayOfWeek: timetableFilter.dayOfWeek === '' ? undefined : Number(timetableFilter.dayOfWeek),
+        }),
+        courseApi.getAll(),
+        sectionApi.getAll(),
+      ]);
+      setTimetableEntries(entries);
+      setCourses(courseData);
+      setSections(sectionData);
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setLoading(false);
+    }
+  }, [timetableFilter]);
+
   useEffect(() => {
     if (activeTab === 'sections') {
       loadSections();
     } else if (activeTab === 'courses') {
       loadCourses();
-    } else {
+    } else if (activeTab === 'assignments') {
       loadAssignments();
+    } else {
+      loadTimetable();
     }
-  }, [activeTab, loadSections, loadCourses, loadAssignments]);
+  }, [activeTab, loadSections, loadCourses, loadAssignments, loadTimetable]);
 
   useEffect(() => {
     if (tabs.length > 0 && !tabs.some((tab) => tab.id === activeTab)) {
@@ -278,6 +323,41 @@ export default function AcademicsPage() {
 
   // Filter assignments by the selected stage on the client (the API has no
   // stage query parameter for assignments).
+  //
+  // ---------------- Timetable actions ----------------
+  const timetableFormCourseStage =
+    courses.find((course) => course.id === timetableForm.courseId)?.stage ?? null;
+  const handleCreateTimetableEntry = (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!timetableForm.courseId || !timetableForm.sectionId) {
+      setError('يرجى اختيار المادة والشعبة');
+      return;
+    }
+    if (timetableForm.startTime >= timetableForm.endTime) {
+      setError('وقت النهاية يجب أن يكون بعد وقت البداية');
+      return;
+    }
+    runAction(async () => {
+      await timetableApi.create(timetableForm);
+      setTimetableForm((form) => ({ ...form, courseId: '', sectionId: '' }));
+      await loadTimetable();
+    }, 'تم إضافة الموعد إلى الجدول');
+  };
+
+  const handleDeleteTimetableEntry = (entry: TimetableItem) => {
+    if (
+      !window.confirm(
+        `حذف موعد «${entry.course.code} / شعبة ${entry.section.name} / ${entry.dayLabel} ${entry.startTime}-${entry.endTime}»؟`,
+      )
+    ) {
+      return;
+    }
+    runAction(async () => {
+      await timetableApi.delete(entry.id);
+      await loadTimetable();
+    }, 'تم حذف الموعد من الجدول');
+  };
+
   const visibleAssignments = stageFilter
     ? assignments.filter((assignment) => assignment.course.stage === Number(stageFilter))
     : assignments;
@@ -858,6 +938,244 @@ export default function AcademicsPage() {
                 )}
               </div>
             )}
+          </div>
+        ) : activeTab === 'timetable' ? (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '18px' }}>
+            {canManageTimetable && (
+              <form
+                className="glass-card"
+                onSubmit={handleCreateTimetableEntry}
+                style={{ padding: '18px' }}
+              >
+                <h2 style={{ fontSize: '16px', fontWeight: '800', marginBottom: '6px' }}>
+                  إضافة موعد إلى الجدول
+                </h2>
+                <p style={{ fontSize: '12px', color: 'var(--text-muted)', marginBottom: '12px', lineHeight: 1.7 }}>
+                  الجدول يحدد يوم ووقت محاضرة كل مادة لكل شعبة. يُستخدم للسماح للطالب بالحضور
+                  في محاضرة شعبة أخرى للمادة نفسها (الموازي) مع تسجيل حضوره بملاحظة بدل الغياب.
+                </p>
+                <div className="academics-form-grid">
+                  <div>
+                    <label className="academics-label">المادة</label>
+                    <select
+                      className="input"
+                      value={timetableForm.courseId}
+                      onChange={(e) =>
+                        setTimetableForm((form) => ({
+                          ...form,
+                          courseId: e.target.value,
+                          sectionId: '',
+                        }))
+                      }
+                      required
+                    >
+                      <option value="">اختر المادة</option>
+                      {courses.map((course) => (
+                        <option key={course.id} value={course.id}>
+                          {course.code} — {course.name} ({stageLabel(course.stage)})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="academics-label">الشعبة</label>
+                    <select
+                      className="input"
+                      value={timetableForm.sectionId}
+                      onChange={(e) =>
+                        setTimetableForm((form) => ({ ...form, sectionId: e.target.value }))
+                      }
+                      required
+                    >
+                      <option value="">اختر الشعبة</option>
+                      {sections
+                        .filter(
+                          (section) =>
+                            timetableFormCourseStage === null ||
+                            section.stage === timetableFormCourseStage,
+                        )
+                        .map((section) => (
+                          <option key={section.id} value={section.id}>
+                            شعبة {section.name} — {stageLabel(section.stage)} (
+                            {section.studyPeriod === 'EVENING' ? 'مسائية' : 'صباحية'})
+                          </option>
+                        ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="academics-label">اليوم</label>
+                    <select
+                      className="input"
+                      value={timetableForm.dayOfWeek}
+                      onChange={(e) =>
+                        setTimetableForm((form) => ({ ...form, dayOfWeek: Number(e.target.value) }))
+                      }
+                    >
+                      {TIMETABLE_DAYS.map((day) => (
+                        <option key={day.value} value={day.value}>
+                          {day.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div style={{ display: 'flex', gap: '8px' }}>
+                    <div style={{ flex: 1 }}>
+                      <label className="academics-label">من</label>
+                      <input
+                        type="time"
+                        className="input"
+                        value={timetableForm.startTime}
+                        onChange={(e) =>
+                          setTimetableForm((form) => ({ ...form, startTime: e.target.value }))
+                        }
+                        required
+                      />
+                    </div>
+                    <div style={{ flex: 1 }}>
+                      <label className="academics-label">إلى</label>
+                      <input
+                        type="time"
+                        className="input"
+                        value={timetableForm.endTime}
+                        onChange={(e) =>
+                          setTimetableForm((form) => ({ ...form, endTime: e.target.value }))
+                        }
+                        required
+                      />
+                    </div>
+                  </div>
+                </div>
+                <button
+                  type="submit"
+                  className="btn btn-primary"
+                  style={{ marginTop: '14px' }}
+                  disabled={actionLoading}
+                >
+                  إضافة الموعد
+                </button>
+              </form>
+            )}
+
+            <div className="glass-card" style={{ padding: '18px' }}>
+              <div
+                style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  flexWrap: 'wrap',
+                  gap: '12px',
+                  marginBottom: '12px',
+                }}
+              >
+                <h2 style={{ fontSize: '16px', fontWeight: '800' }}>
+                  الجدول الدراسي ({timetableEntries.length})
+                </h2>
+                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                  <select
+                    className="input"
+                    style={{ width: 'auto' }}
+                    value={timetableFilter.courseId}
+                    onChange={(e) =>
+                      setTimetableFilter((filter) => ({ ...filter, courseId: e.target.value }))
+                    }
+                  >
+                    <option value="">كل المواد</option>
+                    {courses.map((course) => (
+                      <option key={course.id} value={course.id}>
+                        {course.code} — {course.name}
+                      </option>
+                    ))}
+                  </select>
+                  <select
+                    className="input"
+                    style={{ width: 'auto' }}
+                    value={timetableFilter.sectionId}
+                    onChange={(e) =>
+                      setTimetableFilter((filter) => ({ ...filter, sectionId: e.target.value }))
+                    }
+                  >
+                    <option value="">كل الشعب</option>
+                    {sections.map((section) => (
+                      <option key={section.id} value={section.id}>
+                        شعبة {section.name} ({section.studyPeriod === 'EVENING' ? 'مسائية' : 'صباحية'})
+                      </option>
+                    ))}
+                  </select>
+                  <select
+                    className="input"
+                    style={{ width: 'auto' }}
+                    value={timetableFilter.dayOfWeek}
+                    onChange={(e) =>
+                      setTimetableFilter((filter) => ({ ...filter, dayOfWeek: e.target.value }))
+                    }
+                  >
+                    <option value="">كل الأيام</option>
+                    {TIMETABLE_DAYS.map((day) => (
+                      <option key={day.value} value={day.value}>
+                        {day.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              {timetableEntries.length === 0 ? (
+                <div className="empty-state">
+                  <p style={{ color: 'var(--text-muted)' }}>
+                    لا توجد مواعيد في الجدول. أضف أول موعد من النموذج أعلاه.
+                  </p>
+                </div>
+              ) : (
+                <div style={{ overflowX: 'auto' }}>
+                  <table className="attendance-table" style={{ fontSize: '13px' }}>
+                    <thead>
+                      <tr>
+                        <th>المادة</th>
+                        <th>الشعبة</th>
+                        <th>اليوم</th>
+                        <th style={{ textAlign: 'center' }}>من</th>
+                        <th style={{ textAlign: 'center' }}>إلى</th>
+                        <th>المرحلة</th>
+                        {canManageTimetable && <th style={{ textAlign: 'center' }}>حذف</th>}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {timetableEntries.map((entry) => (
+                        <tr key={entry.id}>
+                          <td style={{ fontWeight: '700' }}>
+                            <bdi dir="ltr">{entry.course.code}</bdi> — {entry.course.name}
+                          </td>
+                          <td>
+                            شعبة {entry.section.name}{' '}
+                            {entry.section.studyPeriod === 'EVENING' ? '(مساء)' : '(صباح)'}
+                          </td>
+                          <td>{entry.dayLabel}</td>
+                          <td style={{ textAlign: 'center' }} dir="ltr">
+                            {entry.startTime}
+                          </td>
+                          <td style={{ textAlign: 'center' }} dir="ltr">
+                            {entry.endTime}
+                          </td>
+                          <td>{stageLabel(entry.course.stage)}</td>
+                          {canManageTimetable && (
+                            <td style={{ textAlign: 'center' }}>
+                              <button
+                                type="button"
+                                className="btn btn-sm"
+                                style={{ color: '#B91C1C' }}
+                                onClick={() => handleDeleteTimetableEntry(entry)}
+                              >
+                                حذف
+                              </button>
+                            </td>
+                          )}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
           </div>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '18px' }}>

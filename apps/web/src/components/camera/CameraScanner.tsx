@@ -4,6 +4,7 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { Html5Qrcode, Html5QrcodeSupportedFormats } from 'html5-qrcode';
 import { attendanceApi } from '@/lib/api';
 import { playScanSuccess, playScanDuplicate, playScanError } from '@/lib/sounds';
+import { getCameraErrorMessage, getCameraListErrorMessage, CAMERA_ERROR_MESSAGES } from '@/lib/camera-errors';
 
 interface CameraScannerProps {
   lectureId: string;
@@ -176,13 +177,13 @@ export function CameraScanner({
           const preferred = devices.find((d) => /hd|wide|webcam/i.test(d.label)) || devices[0];
           setSelectedCameraId(preferred.id);
         } else {
-          setCameraError('لم يتم العثور على أي كاميرا متصلة بالجهاز.');
+          setCameraError(CAMERA_ERROR_MESSAGES.NO_CAMERA);
         }
       })
       .catch((err) => {
         if (!mounted) return;
         console.error('Error fetching cameras:', err);
-        setCameraError('تعذر الوصول إلى الكاميرا. يرجى منح الإذن للمتصفح.');
+        setCameraError(getCameraListErrorMessage(err, null));
       });
 
     return () => {
@@ -264,7 +265,7 @@ export function CameraScanner({
       applyZoom(zoomLevel);
     } catch (err: any) {
       console.error('Failed to start camera:', err);
-      setCameraError(err?.message || 'تعذر تشغيل الكاميرا. تأكد من إعطاء الصلاحيات.');
+      setCameraError(getCameraErrorMessage(err));
       setIsScanning(false);
     }
   }, [selectedCameraId, handleScanSuccess, applyZoom, zoomLevel]);

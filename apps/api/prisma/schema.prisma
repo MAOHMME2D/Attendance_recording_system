@@ -16,6 +16,7 @@ model Lecture {
   name              String
   studyPeriod       String   @default("MORNING")
   section           String?
+  sectionId         String?
   courseId          String?
   status            String   @default("ACTIVE")
   qrToken           String   @unique
@@ -30,12 +31,15 @@ model Lecture {
 
   attendances AttendanceRecord[]
   course      Course?          @relation(fields: [courseId], references: [id], onDelete: SetNull)
+  sectionRef  Section?         @relation(fields: [sectionId], references: [id], onDelete: SetNull)
   createdBy   StaffUser?       @relation("LectureCreator", fields: [createdByUserId], references: [id], onDelete: SetNull)
   conductedBy StaffUser?       @relation("LectureConductor", fields: [conductedByUserId], references: [id], onDelete: SetNull)
+  lectureSections LectureSection[]
 
   @@index([createdByUserId])
   @@index([conductedByUserId])
   @@index([courseId])
+  @@index([sectionId])
   @@index([deletedAt])
 }
 
@@ -75,6 +79,9 @@ model AttendanceRecord {
   ipAddress    String?
   registeredAt DateTime @default(now())
   createdAt    DateTime @default(now())
+  /// Present with a note, e.g. attended another section's session of the
+  /// same course ("حاضر عبر الشعبة 2"). NULL for ordinary records.
+  note         String?
 
   lecture Lecture  @relation(fields: [lectureId], references: [id])
   student Student? @relation(fields: [studentId], references: [id], onDelete: SetNull)
@@ -96,6 +103,9 @@ model Section {
   updatedAt   DateTime @updatedAt
 
   students Student[]
+  lectures Lecture[]
+  lectureSections LectureSection[]
+  timetableEntries TimetableEntry[]
 
   @@unique([stage, studyPeriod, name])
   @@index([stage, studyPeriod])
@@ -114,6 +124,7 @@ model Course {
 
   lectures    Lecture[]
   assignments TeachingAssignment[]
+  timetableEntries TimetableEntry[]
 
   @@unique([stage, code])
   @@index([stage])
@@ -207,4 +218,45 @@ model SystemSetting {
   value     String
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+/// Link between a lecture and the sections it covers. One lecture may now
+/// serve several sections (e.g. the same course held for sections 1 and 2 in
+/// one sitting). `Lecture.sectionId` is kept as the primary/first section for
+/// backwards compatibility with older rows.
+model LectureSection {
+  lectureId String
+  sectionId String
+
+  lecture Lecture @relation(fields: [lectureId], references: [id], onDelete: Cascade)
+  section Section @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+
+  @@id([lectureId, sectionId])
+  @@index([sectionId])
+}
+
+/// Weekly timetable for a course per section. Day numbering follows the
+/// Iraqi academic week: 0 = Sunday ... 6 = Saturday.
+/// Times are stored as "HH:mm" 24h strings. This table never decides who may
+/// sit an exam; it only drives cross-section attendance:
+///   1) a student may scan into another section's session of the same course
+///      when his own (course, section) pair has a timetable entry, and
+///   2) at close, a student marked elsewhere this week is recorded as
+///      "حاضر عبر الشعبة X" instead of absent.
+model TimetableEntry {
+  id         String @id @default(uuid())
+  courseId   String
+  sectionId  String
+  dayOfWeek  Int
+  startTime  String
+  endTime    String
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  course  Course  @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  section Section @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+
+  @@unique([courseId, sectionId, dayOfWeek, startTime])
+  @@index([sectionId, dayOfWeek])
+  @@index([courseId])
 }

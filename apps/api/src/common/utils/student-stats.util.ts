@@ -1,4 +1,5 @@
 import type { Prisma } from '@prisma/client';
+import { notCoveredWhere } from './coverage.util';
 
 /** The slice of the Prisma client needed to recompute cached counters. */
 export type StudentStatsDb = Pick<Prisma.TransactionClient, 'attendanceRecord' | 'student'>;
@@ -23,6 +24,9 @@ export async function recomputeStudentStats(
     where: {
       studentId: { in: ids },
       lecture: { status: 'CLOSED', deletedAt: null },
+      // System-generated "حاضر عبر…" rows are display credits, not physical
+      // attendances; they must not inflate counters.
+      ...notCoveredWhere(),
     },
     _count: { _all: true },
   });

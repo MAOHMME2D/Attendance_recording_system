@@ -20,6 +20,7 @@ interface AttendanceRecord {
   studentCode?: string;
   status: string;
   registeredAt: string;
+  note?: string | null;
 }
 
 interface StudentOption {
@@ -37,10 +38,11 @@ function HomeContent() {
   const canManageSections = can(PERMISSIONS.SECTIONS_MANAGE);
   const canLoadStudentOptions = can(PERMISSIONS.STUDENT_OPTIONS);
 
-  // State for creating a new lecture
+  // State for creating a new lecture. A lecture is bound to one or more
+  // sections (by id): the backend rejects lectures without at least one.
   const [lectureName, setLectureName] = useState('');
   const [lectureStudyPeriod, setLectureStudyPeriod] = useState<'MORNING' | 'EVENING'>('MORNING');
-  const [selectedSections, setSelectedSections] = useState<string[]>([]); // empty array means ALL sections
+  const [selectedSectionIds, setSelectedSectionIds] = useState<string[]>([]);
   const [isCreating, setIsCreating] = useState(false);
   const [dbSections, setDbSections] = useState<SectionItem[]>([]);
   const [courses, setCourses] = useState<CourseItem[]>([]);
@@ -96,22 +98,28 @@ function HomeContent() {
         ? current
         : (matching[0].studyPeriod as 'MORNING' | 'EVENING'),
     );
-    setSelectedSections([]);
+    setSelectedSectionIds([]);
   }, [courseStage, dbSections]);
 
   const availableSections = stageSections
     .filter((section) => section.studyPeriod === lectureStudyPeriod)
-    .map((section) => ({ value: section.name, label: section.label || `الشعبة ${section.name}` }));
+    .map((section) => ({
+      id: section.id,
+      name: section.name,
+      label: section.label || `الشعبة ${section.name}`,
+    }));
 
-  const toggleSection = (secVal: string) => {
-    setSelectedSections((prev) => {
-      if (prev.includes(secVal)) {
-        return prev.filter((s) => s !== secVal);
-      } else {
-        return [...prev, secVal].sort((a, b) => Number(a) - Number(b));
-      }
-    });
-  };
+  // Prune selections that no longer match the visible study period.
+  useEffect(() => {
+    setSelectedSectionIds((current) =>
+      current.filter((id) => availableSections.some((sec) => sec.id === id)),
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lectureStudyPeriod, courseStage, dbSections]);
+
+  const selectedSections = availableSections.filter((sec) =>
+    selectedSectionIds.includes(sec.id),
+  );
 
   // Active lecture state
   const [lecture, setLecture] = useState<any>(null);
@@ -251,14 +259,20 @@ function HomeContent() {
       alert('اختر المادة قبل إنشاء المحاضرة');
       return;
     }
+    if (selectedSectionIds.length === 0) {
+      alert('اختر شعبة واحدة على الأقل قبل الإنشاء.');
+      return;
+    }
+    const primary = selectedSections[0];
     setIsCreating(true);
     try {
-      const sectionParam = selectedSections.length > 0 ? selectedSections.join(',') : undefined;
       const result = await lectureApi.create(
         lectureName.trim(),
         lectureStudyPeriod,
-        sectionParam,
+        primary?.name,
         courseId,
+        primary?.id,
+        selectedSectionIds,
       );
       setLecture(result);
       setAttendances([]);
@@ -397,20 +411,31 @@ function HomeContent() {
     };
   }, []);
 
-  // Filter students for manual search (Isolated to this lecture's Study Period & Section(s))
+  // Display names of the sections linked to the open lecture (multi-section).
+  const lectureSectionNames: string[] = (() => {
+    const current: any = lecture;
+    if (!current) return [];
+    if (Array.isArray(current.lectureSections) && current.lectureSections.length > 0) {
+      return current.lectureSections
+        .map((ls: any) => String(ls?.section?.name ?? ''))
+        .filter(Boolean);
+    }
+    if (current.sectionRef?.name) return [String(current.sectionRef.name)];
+    if (current.section) return [String(current.section)];
+    return [];
+  })();
+
+  // Filter students for manual search (Isolated to this lecture's Study Period
+  // and stage; the backend remains the authority on section/timetable
+  // eligibility when the record is written).
   const filteredStudentsForManual = manualSearch.trim()
     ? allStudents.filter((s: any) => {
         // Match study period
         if (lecture?.studyPeriod && (s.studyPeriod || 'MORNING') !== lecture.studyPeriod) {
           return false;
         }
-        // Match section if lecture is for specific section(s)
-        if (lecture?.section && lecture.section !== 'ALL') {
-          const targetSections = lecture.section.split(',').map((sec: string) => sec.trim().replace(/[^0-9]/g, '') || sec.trim());
-          const studentSec = String(s.section || '').trim().replace(/[^0-9]/g, '') || String(s.section || '').trim();
-          if (studentSec && !targetSections.includes(studentSec)) {
-            return false;
-          }
+        if (lecture?.course?.stage && Number(s.stage) !== Number(lecture.course.stage)) {
+          return false;
         }
         return (
           s.name.toLowerCase().includes(manualSearch.toLowerCase()) ||
@@ -481,7 +506,7 @@ function HomeContent() {
                   onChange={(e) => {
                     const value = e.target.value;
                     setCourseId(value);
-                    setSelectedSections([]);
+                    setSelectedSectionIds([]);
                     const picked = courses.find((course) => course.id === value);
                     if (picked) {
                       setLectureName((current) => {
@@ -525,7 +550,7 @@ function HomeContent() {
                     type="button"
                     onClick={() => {
                       setLectureStudyPeriod('MORNING');
-                      setSelectedSections([]);
+                      setSelectedSectionIds([]);
                     }}
                     style={{
                       padding: '10px 14px',
@@ -549,7 +574,7 @@ function HomeContent() {
                     type="button"
                     onClick={() => {
                       setLectureStudyPeriod('EVENING');
-                      setSelectedSections([]);
+                      setSelectedSectionIds([]);
                     }}
                     style={{
                       padding: '10px 14px',
@@ -572,52 +597,34 @@ function HomeContent() {
                 </div>
               </div>
 
-              {/* Multi-Section Selection */}
+              {/* Section Selection: one or more sections per lecture */}
               <div style={{ marginBottom: '18px' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px', flexWrap: 'wrap', gap: '6px' }}>
                   <label style={{ fontSize: '13px', fontWeight: '700', color: '#374151' }}>
-                    الشُعب المستهدفة (يمكنك اختيار أكثر من شعبة):
+                    شعب المحاضرة (شعبة واحدة على الأقل):
                   </label>
-                  <div style={{ display: 'flex', gap: '6px' }}>
-                    {canManageSections && (
-                      <button
-                        type="button"
-                        onClick={() => setShowSectionModal(true)}
-                        title="إضافة أو حذف شُعب"
-                        style={{
-                          background: '#EEF2FF',
-                          color: '#4F46E5',
-                          border: '1px solid #C7D2FE',
-                          borderRadius: '6px',
-                          padding: '3px 10px',
-                          fontSize: '11px',
-                          fontWeight: '700',
-                          cursor: 'pointer',
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: '4px',
-                        }}
-                      >
-                        ⚙️ إدارة الشُعب
-                      </button>
-                    )}
+                  {canManageSections && (
                     <button
                       type="button"
-                      onClick={() => setSelectedSections([])}
+                      onClick={() => setShowSectionModal(true)}
+                      title="إضافة أو حذف شُعب"
                       style={{
-                        background: selectedSections.length === 0 ? '#111827' : '#F3F4F6',
-                        color: selectedSections.length === 0 ? '#FFFFFF' : '#4B5563',
-                        border: selectedSections.length === 0 ? '1px solid #111827' : '1px solid #D1D5DB',
+                        background: '#EEF2FF',
+                        color: '#4F46E5',
+                        border: '1px solid #C7D2FE',
                         borderRadius: '6px',
                         padding: '3px 10px',
                         fontSize: '11px',
                         fontWeight: '700',
                         cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '4px',
                       }}
                     >
-                      {selectedSections.length === 0 ? '✓ تم تحديد كافة الشُعب' : 'تحديد كافة الشُعب'}
+                      ⚙️ إدارة الشُعب
                     </button>
-                  </div>
+                  )}
                 </div>
 
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(130px, 1fr))', gap: '8px' }}>
@@ -640,12 +647,18 @@ function HomeContent() {
                     </div>
                   ) : (
                     availableSections.map((sec) => {
-                    const isSelected = selectedSections.includes(sec.value);
+                    const isSelected = selectedSectionIds.includes(sec.id);
                     return (
                       <button
-                        key={sec.value}
+                        key={sec.id}
                         type="button"
-                        onClick={() => toggleSection(sec.value)}
+                        onClick={() =>
+                          setSelectedSectionIds((current) =>
+                            isSelected
+                              ? current.filter((id) => id !== sec.id)
+                              : [...current, sec.id],
+                          )
+                        }
                         style={{
                           padding: '10px 12px',
                           borderRadius: '10px',
@@ -685,7 +698,7 @@ function HomeContent() {
                             fontWeight: '800',
                           }}
                         >
-                          {isSelected ? '✓' : sec.value}
+                          {isSelected ? '✓' : sec.name}
                         </span>
                       </button>
                     );
@@ -695,14 +708,19 @@ function HomeContent() {
 
                 {/* Selection Summary */}
                 <div style={{ fontSize: '12px', color: '#6B7280', marginTop: '10px', background: '#F9FAFB', padding: '8px 12px', borderRadius: '8px', border: '1px solid #F3F4F6' }}>
-                  {selectedSections.length === 0 ? (
+                  {availableSections.length === 0 ? null : selectedSections.length > 0 ? (
                     <span style={{ color: '#059669', fontWeight: '600' }}>
-                      ✓ سيتم شمول كافة شُعب {selectedCourse ? `${stageLabel(selectedCourse.stage)} ` : ''}
-                      {lectureStudyPeriod === 'MORNING' ? 'الصباحية' : 'المسائية'} معاً في هذه المحاضرة
+                      ✓ المحاضرة مخصصة لـ{' '}
+                      <strong style={{ color: '#111827' }}>
+                        {selectedSections.map((sec) => sec.label).join('، ')}
+                      </strong>{' '}
+                      من{' '}
+                      {selectedCourse ? `${stageLabel(selectedCourse.stage)} ` : ''}
+                      {lectureStudyPeriod === 'MORNING' ? 'الصباحية' : 'المسائية'}
                     </span>
                   ) : (
-                    <span>
-                      🎯 الشُعب المختارة معاً: <strong style={{ color: '#111827' }}>{selectedSections.map(s => `شعبة ${s}`).join(' + ')}</strong> ({selectedSections.length} شُعب مشتركة)
+                    <span style={{ color: '#B45309', fontWeight: '600' }}>
+                      ⚠️ اختر شعبة واحدة على الأقل. يمكن اختيار أكثر من شعبة لنفس المحاضرة.
                     </span>
                   )}
                 </div>
@@ -729,7 +747,7 @@ function HomeContent() {
               <button
                 className="btn btn-primary"
                 onClick={handleCreate}
-                disabled={isCreating || !lectureName.trim() || !courseId}
+                disabled={isCreating || !lectureName.trim() || !courseId || selectedSectionIds.length === 0}
                 style={{ width: '100%', fontSize: '15px', fontWeight: '800', padding: '12px 20px' }}
                 id="create-lecture-btn"
               >
@@ -791,26 +809,7 @@ function HomeContent() {
                   >
                     {(lecture.studyPeriod || 'MORNING') === 'EVENING' ? 'دراسة مسائية' : 'دراسة صباحية'}
                   </span>
-                  {lecture.section ? (
-                    <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}>
-                      {lecture.section.split(',').map((secItem: string) => (
-                        <span
-                          key={secItem}
-                          style={{
-                            padding: '3px 9px',
-                            borderRadius: '6px',
-                            fontSize: '11px',
-                            fontWeight: '700',
-                            background: '#F3F4F6',
-                            color: '#1F2937',
-                            border: '1px solid #D1D5DB',
-                          }}
-                        >
-                          شعبة {secItem.trim()}
-                        </span>
-                      ))}
-                    </div>
-                  ) : (
+                  {lectureSectionNames.length > 0 && (
                     <span
                       style={{
                         padding: '3px 9px',
@@ -818,11 +817,26 @@ function HomeContent() {
                         fontSize: '11px',
                         fontWeight: '700',
                         background: '#F3F4F6',
-                        color: '#4B5563',
+                        color: '#1F2937',
                         border: '1px solid #D1D5DB',
                       }}
                     >
-                      كافة الشُعب
+                      شعب {lectureSectionNames.join('، ')}
+                    </span>
+                  )}
+                  {lecture.conductedBy && (
+                    <span
+                      style={{
+                        padding: '3px 9px',
+                        borderRadius: '6px',
+                        fontSize: '11px',
+                        fontWeight: '700',
+                        background: '#FFF7ED',
+                        color: '#9A3412',
+                        border: '1px solid #FED7AA',
+                      }}
+                    >
+                      المشرف: {lecture.conductedBy.fullName}
                     </span>
                   )}
                   <span
@@ -1085,7 +1099,7 @@ function HomeContent() {
                           <th>الباركود</th>
                           <th style={{ textAlign: 'center' }}>الحالة</th>
                           <th>وقت التسجيل</th>
-                          {canManualAttendance && (
+                          {canManualAttendance && lecture.status === 'ACTIVE' && (
                             <th style={{ textAlign: 'center', width: '70px' }}>تعديل</th>
                           )}
                         </tr>
@@ -1094,7 +1108,14 @@ function HomeContent() {
                         {attendances.map((record, index) => (
                           <tr key={record.id} className="animate-fade-in">
                             <td style={{ color: 'var(--text-muted)', fontWeight: '600' }}>{index + 1}</td>
-                            <td style={{ fontWeight: '700', color: '#111827' }}>{record.studentName}</td>
+                            <td style={{ fontWeight: '700', color: '#111827' }}>
+                              {record.studentName}
+                              {record.note && (
+                                <span style={{ display: 'block', fontSize: '10px', fontWeight: '600', color: '#6D28D9' }}>
+                                  {record.note}
+                                </span>
+                              )}
+                            </td>
                             <td>
                               <span style={{ fontFamily: 'monospace', fontSize: '12px', color: '#4B5563' }}>
                                 {record.studentCode || '-'}
@@ -1119,7 +1140,7 @@ function HomeContent() {
                                 {formatAttendanceTime(record.registeredAt)}
                               </span>
                             </td>
-                            {canManualAttendance && (
+                            {canManualAttendance && lecture.status === 'ACTIVE' && (
                               <td style={{ textAlign: 'center' }}>
                                 <button
                                   className="btn btn-ghost btn-sm"
@@ -1384,7 +1405,14 @@ function HomeContent() {
                         {closedSummary.presentStudents.map((s, idx) => (
                           <tr key={s.id || idx}>
                             <td style={{ textAlign: 'center', color: 'var(--text-muted)' }}>{idx + 1}</td>
-                            <td style={{ fontWeight: '700', color: '#111827' }}>{s.studentName}</td>
+                            <td style={{ fontWeight: '700', color: '#111827' }}>
+                              {s.studentName}
+                              {s.note && (
+                                <span style={{ display: 'block', fontSize: '10px', fontWeight: '600', color: '#6D28D9' }}>
+                                  {s.note}
+                                </span>
+                              )}
+                            </td>
                             <td style={{ fontFamily: 'monospace', color: '#4B5563' }}>{s.studentCode || '-'}</td>
                             <td style={{ color: '#6B7280', fontSize: '12px', textAlign: 'center' }}>
                               <span dir="ltr" style={{ unicodeBidi: 'isolate', display: 'inline-block' }}>

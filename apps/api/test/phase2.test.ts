@@ -985,6 +985,22 @@ describe('safe deletion', () => {
     const gone = await prisma.student.findUnique({ where: { id: created.body.id } });
     assert.equal(gone, null);
   });
+
+  // The API enforces one open lecture per conductor (Phase 3). The seeded
+  // fixture lecture keeps lecturer A busy for the deletion tests above, so it
+  // is closed here — after those tests, before the lecture-conduct tests that
+  // create lectures with this account.
+  it('closes the seeded lecture fixture once deletion tests are done', async () => {
+    const closed = await api(`/api/lectures/${ids.activeLectureC1}/close`, {
+      method: 'PATCH',
+      token: tokens.lecturerA!,
+    });
+    assert.equal(closed.status, 200, JSON.stringify(closed.body));
+    assert.ok(
+      closed.body.present + closed.body.absent >= 3,
+      'closing must record the three seeded section-1 students',
+    );
+  });
 });
 
 describe('lectures, assignments and attendance scoping', () => {
@@ -1792,5 +1808,681 @@ describe('phase 2 review regressions', () => {
       { token: tokens.lecturerA! },
     );
     assert.equal(invalidStage.status, 400);
+  });
+});
+
+describe('phase 3 section identity, scoping and concurrency', () => {
+  // Lecturer A still conducts an ACTIVE lecture left by M1, so the lecture
+  // creations below use the technical lecturer (his earlier sessions were
+  // closed) to exercise the create/scan/close path without tripping the
+  // one-open-lecture-per-conductor guard.
+  const p3: { lectureId?: string } = {};
+
+  it('rejects creating a lecture without a section', async () => {
+    const result = await api('/api/lectures', {
+      method: 'POST',
+      token: tokens.techA!,
+      body: { name: 'محاضرة بلا شعبة', studyPeriod: 'MORNING' },
+    });
+    assert.equal(result.status, 400, JSON.stringify(result.body));
+    assert.match(String(result.body.message), /الشعبة/);
+  });
+
+  it('rejects the ALL pseudo-section', async () => {
+    const result = await api('/api/lectures', {
+      method: 'POST',
+      token: tokens.techA!,
+      body: { name: 'محاضرة كافة الشعب', studyPeriod: 'MORNING', section: 'ALL' },
+    });
+    assert.equal(result.status, 400);
+  });
+
+  it('rejects a section text that contradicts the sectionId', async () => {
+    const result = await api('/api/lectures', {
+      method: 'POST',
+      token: tokens.techA!,
+      body: {
+        name: 'محاضرة متضاربة',
+        studyPeriod: 'MORNING',
+        section: '2',
+        sectionId: ids.sectionS2A,
+      },
+    });
+    assert.equal(result.status, 400);
+    assert.match(String(result.body.message), /تطابق/);
+  });
+
+  it('rejects an unknown sectionId', async () => {
+    const result = await api('/api/lectures', {
+      method: 'POST',
+      token: tokens.techA!,
+      body: {
+        name: 'محاضرة شعبة وهمية',
+        studyPeriod: 'MORNING',
+        sectionId: 'not-a-real-section-id',
+      },
+    });
+    assert.equal(result.status, 400);
+  });
+
+  it('binds the lecture to the Section row and records the real conductor', async () => {
+    const result = await api('/api/lectures', {
+      method: 'POST',
+      token: tokens.techA!,
+      body: {
+        name: 'محاضرة هوية الشعبة',
+        studyPeriod: 'MORNING',
+        sectionId: ids.sectionS2A,
+      },
+    });
+    assert.equal(result.status, 201, JSON.stringify(result.body));
+    assert.equal(result.body.sectionId, ids.sectionS2A);
+
+    // The create response is the raw row; the read endpoint hydrates the
+    // relations that the UI needs (sectionRef, conductedBy).
+    const read = await api(`/api/lectures/${result.body.id}`, {
+      token: tokens.techA!,
+    });
+    assert.equal(read.status, 200);
+    assert.equal(read.body.sectionRef.id, ids.sectionS2A);
+    assert.equal(read.body.sectionRef.name, '1');
+    assert.equal(read.body.conductedBy.id, userIds.techA);
+    assert.equal(read.body.conductedBy.fullName, 'محاضر تقني أ');
+
+    const stored = await prisma.lecture.findUnique({
+      where: { id: result.body.id },
+      select: { sectionId: true, section: true, conductedByUserId: true },
+    });
+    assert.equal(stored?.sectionId, ids.sectionS2A);
+    assert.equal(stored?.section, '1');
+    assert.equal(stored?.conductedByUserId, userIds.techA);
+
+    p3.lectureId = result.body.id;
+  });
+
+  it('refuses a student from another section of the same stage', async () => {
+    // طالب د (codeD) belongs to section S2B, the lecture above to S2A.
+    const qr = await api(`/api/students/${ids.studentD}/qr`, {
+      token: tokens.head!,
+    });
+    assert.equal(qr.status, 200);
+
+    const scan = await api(
+      `/api/attendance/${p3.lectureId}/scan-student`,
+      {
+        method: 'POST',
+        token: tokens.techA!,
+        body: { studentCode: qr.body.token },
+      },
+    );
+    assert.equal(scan.status, 400, JSON.stringify(scan.body));
+    assert.match(String(scan.body.message), /الشعبة/);
+
+    assert.equal(
+      await prisma.attendanceRecord.count({ where: { lectureId: p3.lectureId } }),
+      0,
+      'a foreign-section scan must not create a record',
+    );
+  });
+
+  it('keeps concurrent duplicates of the same scan down to one record', async () => {
+    const student = await prisma.student.findUnique({
+      where: { studentCode: ids.codeA },
+    });
+    assert.ok(student);
+    const qr = await api(`/api/students/${student.id}/qr`, {
+      token: tokens.head!,
+    });
+    assert.equal(qr.status, 200);
+
+    // Fire 8 scans of the same QR at once, as two devices (or a double read)
+    // would. The DB unique key plus the per-lecture advisory lock must leave
+    // exactly one PRESENT row.
+    const attempts = await Promise.all(
+      Array.from({ length: 8 }, () =>
+        api(`/api/attendance/${p3.lectureId}/scan-student`, {
+          method: 'POST',
+          token: tokens.techA!,
+          body: { studentCode: qr.body.token },
+        }),
+      ),
+    );
+
+    const confirmed = attempts.filter(
+      (res) => res.status === 201 && res.body.success && !res.body.alreadyRegistered,
+    );
+    const duplicates = attempts.filter(
+      (res) => res.status === 201 && res.body.alreadyRegistered,
+    );
+    assert.ok(
+      confirmed.length + duplicates.length === attempts.length,
+      `every scan must succeed: statuses ${attempts.map((a) => a.status).join(',')}`,
+    );
+    assert.equal(
+      confirmed.length,
+      1,
+      `exactly one scan may register the student (${confirmed.length} did)`,
+    );
+
+    const rows = await prisma.attendanceRecord.findMany({
+      where: { lectureId: p3.lectureId },
+    });
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].status, 'PRESENT');
+    assert.equal(rows[0].studentId, student.id);
+  });
+
+  it('treats a repeated sequential scan of the same student as alreadyRegistered', async () => {
+    const student = await prisma.student.findUnique({
+      where: { studentCode: ids.codeA },
+    });
+    assert.ok(student);
+    const qr = await api(`/api/students/${student.id}/qr`, {
+      token: tokens.head!,
+    });
+    assert.equal(qr.status, 200);
+
+    const scan = await api(`/api/attendance/${p3.lectureId}/scan-student`, {
+      method: 'POST',
+      token: tokens.techA!,
+      body: { studentCode: qr.body.token },
+    });
+    assert.equal(scan.status, 201, JSON.stringify(scan.body));
+    assert.equal(scan.body.alreadyRegistered, true);
+
+    assert.equal(
+      await prisma.attendanceRecord.count({ where: { lectureId: p3.lectureId } }),
+      1,
+      'a rescan must not create a second row',
+    );
+  });
+
+  it('closes the section lecture once and records absences atomically', async () => {
+    const closed = await api(`/api/lectures/${p3.lectureId}/close`, {
+      method: 'PATCH',
+      token: tokens.techA!,
+    });
+    assert.equal(closed.status, 200, JSON.stringify(closed.body));
+    // Section S2A has three students: one scanned PRESENT, two recorded ABSENT.
+    assert.equal(closed.body.total, 3);
+    assert.equal(closed.body.present, 1);
+    assert.equal(closed.body.absent, 2);
+    assert.equal(closed.body.absentStudents.length, 2);
+
+    const rows = await prisma.attendanceRecord.findMany({
+      where: { lectureId: p3.lectureId },
+      select: { studentId: true, status: true },
+    });
+    assert.equal(rows.length, 3);
+    assert.deepEqual(
+      rows.map((row) => row.status).sort(),
+      ['ABSENT', 'ABSENT', 'PRESENT'],
+    );
+
+    // A second close must not duplicate absences or touch the first result.
+    const second = await api(`/api/lectures/${p3.lectureId}/close`, {
+      method: 'PATCH',
+      token: tokens.techA!,
+    });
+    assert.equal(second.status, 400, JSON.stringify(second.body));
+    assert.match(String(second.body.message), /closed|مغلقة|مؤرشفة/i);
+    assert.equal(
+      await prisma.attendanceRecord.count({ where: { lectureId: p3.lectureId } }),
+      3,
+    );
+  });
+
+  it('rejects scanning a closed lecture', async () => {
+    const student = await prisma.student.findUnique({
+      where: { studentCode: ids.codeB },
+    });
+    assert.ok(student);
+    const qr = await api(`/api/students/${student.id}/qr`, {
+      token: tokens.head!,
+    });
+    assert.equal(qr.status, 200);
+
+    const scan = await api(`/api/attendance/${p3.lectureId}/scan-student`, {
+      method: 'POST',
+      token: tokens.techA!,
+      body: { studentCode: qr.body.token },
+    });
+    assert.equal(scan.status, 400, JSON.stringify(scan.body));
+    assert.match(String(scan.body.message), /منتهية|مغلقة/);
+  });
+});
+
+describe('phase 3b timetable and multi-section lectures', () => {
+  const p3b: {
+    multiLectureId?: string;
+    sundayLectureId?: string;
+    mondayLectureId?: string;
+    c3Id?: string;
+    eveningSectionId?: string;
+  } = {};
+
+  it('lets the registrar create and list a weekly timetable entry', async () => {
+    const create = await api('/api/timetable', {
+      method: 'POST',
+      token: tokens.registrar!,
+      body: {
+        courseId: ids.courseC1,
+        sectionId: ids.sectionS2A,
+        dayOfWeek: 1,
+        startTime: '08:00',
+        endTime: '09:30',
+      },
+    });
+    assert.equal(create.status, 201, JSON.stringify(create.body));
+    assert.equal(create.body.dayLabel, 'الإثنين');
+
+    const list = await api(`/api/timetable?courseId=${ids.courseC1}`, {
+      token: tokens.registrar!,
+    });
+    assert.equal(list.status, 200);
+    assert.ok(
+      (list.body as any[]).some((entry) => entry.id === create.body.id),
+      'timetable list must include the created entry',
+    );
+  });
+
+  it('lets the head of department manage the timetable too', async () => {
+    const entry = await api('/api/timetable', {
+      method: 'POST',
+      token: tokens.head!,
+      body: {
+        courseId: ids.courseC1,
+        sectionId: ids.sectionS2B,
+        dayOfWeek: 0,
+        startTime: '08:00',
+        endTime: '09:30',
+      },
+    });
+    assert.equal(entry.status, 201, JSON.stringify(entry.body));
+  });
+
+  it('rejects timetable writes from a lecturer', async () => {
+    const denied = await api('/api/timetable', {
+      method: 'POST',
+      token: tokens.lecturerA!,
+      body: {
+        courseId: ids.courseC1,
+        sectionId: ids.sectionS2B,
+        dayOfWeek: 2,
+        startTime: '10:00',
+        endTime: '11:30',
+      },
+    });
+    assert.equal(denied.status, 403);
+  });
+
+  it('rejects overlapping slots for the same section', async () => {
+    const overlap = await api('/api/timetable', {
+      method: 'POST',
+      token: tokens.registrar!,
+      body: {
+        courseId: ids.courseC1,
+        sectionId: ids.sectionS2A,
+        dayOfWeek: 1,
+        startTime: '08:30',
+        endTime: '10:00',
+      },
+    });
+    assert.equal(overlap.status, 409, JSON.stringify(overlap.body));
+  });
+
+  it('rejects an exact duplicate slot', async () => {
+    const duplicate = await api('/api/timetable', {
+      method: 'POST',
+      token: tokens.registrar!,
+      body: {
+        courseId: ids.courseC1,
+        sectionId: ids.sectionS2A,
+        dayOfWeek: 1,
+        startTime: '08:00',
+        endTime: '09:30',
+      },
+    });
+    assert.equal(duplicate.status, 409);
+  });
+
+  it('rejects impossible times and mixed-stage entries', async () => {
+    const badTime = await api('/api/timetable', {
+      method: 'POST',
+      token: tokens.registrar!,
+      body: {
+        courseId: ids.courseC1,
+        sectionId: ids.sectionS2A,
+        dayOfWeek: 3,
+        startTime: '09:30',
+        endTime: '08:00',
+      },
+    });
+    assert.equal(badTime.status, 400);
+
+    const wrongStage = await api('/api/timetable', {
+      method: 'POST',
+      token: tokens.registrar!,
+      body: {
+        courseId: ids.courseC1,
+        sectionId: ids.sectionS3A,
+        dayOfWeek: 3,
+        startTime: '10:00',
+        endTime: '11:00',
+      },
+    });
+    assert.equal(wrongStage.status, 400);
+  });
+
+  it('creates one lecture covering two sections and stores the links', async () => {
+    const created = await api('/api/lectures', {
+      method: 'POST',
+      token: tokens.techA!,
+      body: {
+        name: 'محاضرة الشعبة المزدوجة',
+        studyPeriod: 'MORNING',
+        courseId: ids.courseC1,
+        sectionIds: [ids.sectionS2A, ids.sectionS2B],
+      },
+    });
+    assert.equal(created.status, 201, JSON.stringify(created.body));
+    // The first sectionId is the primary (legacy) reference.
+    assert.equal(created.body.sectionId, ids.sectionS2A);
+
+    const read = await api(`/api/lectures/${created.body.id}`, {
+      token: tokens.techA!,
+    });
+    assert.equal(read.status, 200);
+    const linked = new Set(
+      (read.body.lectureSections ?? []).map(
+        (row: any) => row.sectionId ?? row.section?.id,
+      ),
+    );
+    assert.deepEqual(
+      [...linked].sort(),
+      [ids.sectionS2A, ids.sectionS2B].sort(),
+    );
+
+    p3b.multiLectureId = created.body.id;
+  });
+
+  it('rejects unknown section ids and mixed-stage batches', async () => {
+    const unknown = await api('/api/lectures', {
+      method: 'POST',
+      token: tokens.techA!,
+      body: {
+        name: 'شعبة وهمية',
+        studyPeriod: 'MORNING',
+        courseId: ids.courseC1,
+        sectionIds: [ids.sectionS2A, 'not-a-real-section'],
+      },
+    });
+    assert.equal(unknown.status, 400);
+
+    const mixedStage = await api('/api/lectures', {
+      method: 'POST',
+      token: tokens.techA!,
+      body: {
+        name: 'شعب من مرحلتين',
+        studyPeriod: 'MORNING',
+        courseId: ids.courseC1,
+        sectionIds: [ids.sectionS2A, ids.sectionS3A],
+      },
+    });
+    assert.equal(mixedStage.status, 400);
+  });
+
+  it('rejects a batch mixing morning and evening sections', async () => {
+    const created = await api('/api/sections', {
+      method: 'POST',
+      token: tokens.registrar!,
+      body: { stage: 2, studyPeriod: 'EVENING', name: 'EV-TEST' },
+    });
+    assert.equal(created.status, 201, JSON.stringify(created.body));
+    p3b.eveningSectionId = created.body.id;
+
+    const mixedPeriod = await api('/api/lectures', {
+      method: 'POST',
+      token: tokens.techA!,
+      body: {
+        name: 'فترتان مختلفتان',
+        studyPeriod: 'MORNING',
+        courseId: ids.courseC1,
+        sectionIds: [ids.sectionS2A, p3b.eveningSectionId],
+      },
+    });
+    assert.equal(mixedPeriod.status, 400);
+  });
+
+  it('deduplicates repeated section ids in one lecture', async () => {
+    const created = await api('/api/lectures', {
+      method: 'POST',
+      token: tokens.head!,
+      body: {
+        name: 'محاضرة مكررة الشعب',
+        studyPeriod: 'MORNING',
+        courseId: ids.courseC1,
+        sectionIds: [ids.sectionS2B, ids.sectionS2B, ids.sectionS2B],
+      },
+    });
+    assert.equal(created.status, 201, JSON.stringify(created.body));
+    assert.equal(
+      await prisma.lectureSection.count({ where: { lectureId: created.body.id } }),
+      1,
+    );
+
+    await api(`/api/lectures/${created.body.id}/close`, {
+      method: 'PATCH',
+      token: tokens.head!,
+    });
+  });
+
+  it('scans students from every section of the multi-section lecture', async () => {
+    const qrA = await api(`/api/students/${ids.studentA}/qr`, {
+      token: tokens.head!,
+    });
+    assert.equal(qrA.status, 200);
+    const qrD = await api(`/api/students/${ids.studentD}/qr`, {
+      token: tokens.head!,
+    });
+    assert.equal(qrD.status, 200);
+
+    const scanA = await api(`/api/attendance/${p3b.multiLectureId}/scan-student`, {
+      method: 'POST',
+      token: tokens.techA!,
+      body: { studentCode: qrA.body.token },
+    });
+    assert.equal(scanA.status, 201, JSON.stringify(scanA.body));
+
+    const scanD = await api(`/api/attendance/${p3b.multiLectureId}/scan-student`, {
+      method: 'POST',
+      token: tokens.techA!,
+      body: { studentCode: qrD.body.token },
+    });
+    assert.equal(scanD.status, 201, JSON.stringify(scanD.body));
+  });
+
+  it('closes the multi-section lecture with absences for the union only', async () => {
+    const closed = await api(`/api/lectures/${p3b.multiLectureId}/close`, {
+      method: 'PATCH',
+      token: tokens.techA!,
+    });
+    assert.equal(closed.status, 200, JSON.stringify(closed.body));
+    // Union of S2A (A, B, C) and S2B (D).
+    assert.equal(closed.body.total, 4);
+    // A and D scanned. C is covered because the seeded fixture lecture
+    // "محاضرة مغلقة - الخوارزميات" (course C1, same ISO week) has C as PRESENT.
+    assert.equal(closed.body.present, 3, JSON.stringify(closed.body));
+    // B never attended any session of the course this week.
+    assert.equal(closed.body.absent, 1, JSON.stringify(closed.body));
+
+    const foreign = await prisma.attendanceRecord.count({
+      where: {
+        lectureId: p3b.multiLectureId,
+        student: { studentCode: { startsWith: 'S3-' } },
+      },
+    });
+    assert.equal(foreign, 0, 'students outside the linked sections must not be recorded');
+  });
+
+  it('lets a timetabled student attend a parallel session in another section', async () => {
+    // Sunday session for S2B. Student A (S2A) attends; the course is timetabled
+    // for his own section, so the scan is legitimate.
+    const created = await api('/api/lectures', {
+      method: 'POST',
+      token: tokens.techA!,
+      body: {
+        name: 'محاضرة الأحد شعبة 2',
+        studyPeriod: 'MORNING',
+        courseId: ids.courseC1,
+        sectionId: ids.sectionS2B,
+      },
+    });
+    assert.equal(created.status, 201, JSON.stringify(created.body));
+    p3b.sundayLectureId = created.body.id;
+
+    const qrA = await api(`/api/students/${ids.studentA}/qr`, {
+      token: tokens.head!,
+    });
+    assert.equal(qrA.status, 200);
+
+    const scan = await api(`/api/attendance/${p3b.sundayLectureId}/scan-student`, {
+      method: 'POST',
+      token: tokens.techA!,
+      body: { studentCode: qrA.body.token },
+    });
+    assert.equal(scan.status, 201, JSON.stringify(scan.body));
+    assert.equal(scan.body.success, true);
+
+    const record = await prisma.attendanceRecord.findFirst({
+      where: { lectureId: p3b.sundayLectureId, studentId: ids.studentA },
+    });
+    assert.ok(record);
+    assert.equal(record.status, 'PRESENT');
+    assert.match(String(record.note), /الشعبة/);
+
+    const closed = await api(`/api/lectures/${p3b.sundayLectureId}/close`, {
+      method: 'PATCH',
+      token: tokens.techA!,
+    });
+    assert.equal(closed.status, 200);
+  });
+
+  it('records a covered student as present with a note instead of absent', async () => {
+    // Monday session for S2A. Student A already attended a parallel session
+    // of the same course this week, so the close must mark him present
+    // ("حاضر عبر الشعبة …"), never absent. B and C are absent as usual.
+    const created = await api('/api/lectures', {
+      method: 'POST',
+      token: tokens.techA!,
+      body: {
+        name: 'محاضرة الاثنين شعبة 1',
+        studyPeriod: 'MORNING',
+        courseId: ids.courseC1,
+        sectionId: ids.sectionS2A,
+      },
+    });
+    assert.equal(created.status, 201, JSON.stringify(created.body));
+    p3b.mondayLectureId = created.body.id;
+
+    const closed = await api(`/api/lectures/${p3b.mondayLectureId}/close`, {
+      method: 'PATCH',
+      token: tokens.techA!,
+    });
+    assert.equal(closed.status, 200, JSON.stringify(closed.body));
+    // A covered via the Sunday/multi lecture; C covered via the seeded
+    // fixture for the same course this week; only B is absent.
+    assert.equal(closed.body.present, 2, JSON.stringify(closed.body));
+    assert.equal(closed.body.absent, 1, JSON.stringify(closed.body));
+
+    const record = await prisma.attendanceRecord.findFirst({
+      where: { lectureId: p3b.mondayLectureId, studentId: ids.studentA },
+    });
+    assert.ok(record);
+    assert.equal(record.status, 'PRESENT');
+    assert.match(String(record.note), /حاضر عبر/);
+
+    const audit = await prisma.auditLog.findFirst({
+      where: { action: 'ATTENDANCE_COVERED', entityId: p3b.mondayLectureId },
+    });
+    assert.ok(audit, 'coverage must be audited');
+
+    // Follow-up must count the student ONCE for each physical attendance;
+    // the covered row is display credit only. Compute the expectation from
+    // the seeded rows instead of hard-coding a brittle fixture count.
+    const rows = await prisma.attendanceRecord.findMany({
+      where: {
+        studentId: ids.studentA,
+        lecture: { courseId: ids.courseC1, status: 'CLOSED', deletedAt: null },
+      },
+      select: { status: true, note: true },
+    });
+    const expectedPresent = rows.filter(
+      (row) => row.status === 'PRESENT' && !(row.note ?? '').startsWith('حاضر عبر'),
+    ).length;
+    const expectedAbsent = rows.filter((row) => row.status === 'ABSENT').length;
+
+    const detail = await api(
+      `/api/followup/students/${ids.studentA}?courseId=${ids.courseC1}`,
+      { token: tokens.head! },
+    );
+    assert.equal(detail.status, 200, JSON.stringify(detail.body));
+    assert.equal(detail.body.stats.present, expectedPresent, JSON.stringify(detail.body.stats));
+    assert.equal(detail.body.stats.absent, expectedAbsent);
+    assert.equal(detail.body.stats.totalLectures, expectedPresent + expectedAbsent);
+
+    const coveredRow = (detail.body.lectures ?? []).find(
+      (lecture: any) => lecture.lectureId === p3b.mondayLectureId,
+    );
+    assert.ok(coveredRow, 'the covered lecture must still be listed');
+    assert.equal(coveredRow.status, 'PRESENT');
+    assert.match(String(coveredRow.note), /حاضر عبر/);
+  });
+
+  it('rejects cross-section scans without a timetable entry', async () => {
+    const course = await api('/api/courses', {
+      method: 'POST',
+      token: tokens.head!,
+      body: { code: 'CS299', name: 'مادة بدون جدول', stage: 2 },
+    });
+    assert.equal(course.status, 201, JSON.stringify(course.body));
+    p3b.c3Id = course.body.id;
+
+    const assignment = await api('/api/assignments', {
+      method: 'POST',
+      token: tokens.registrar!,
+      body: { staffUserId: userIds.techA, courseId: p3b.c3Id },
+    });
+    assert.equal(assignment.status, 201, JSON.stringify(assignment.body));
+
+    const lecture = await api('/api/lectures', {
+      method: 'POST',
+      token: tokens.techA!,
+      body: {
+        name: 'محاضرة بلا جدول موازٍ',
+        studyPeriod: 'MORNING',
+        courseId: p3b.c3Id,
+        sectionId: ids.sectionS2A,
+      },
+    });
+    assert.equal(lecture.status, 201, JSON.stringify(lecture.body));
+
+    const qrD = await api(`/api/students/${ids.studentD}/qr`, {
+      token: tokens.head!,
+    });
+    assert.equal(qrD.status, 200);
+
+    const scan = await api(`/api/attendance/${lecture.body.id}/scan-student`, {
+      method: 'POST',
+      token: tokens.techA!,
+      body: { studentCode: qrD.body.token },
+    });
+    assert.equal(scan.status, 400, JSON.stringify(scan.body));
+    assert.match(String(scan.body.message), /الشعبة/);
+
+    await api(`/api/lectures/${lecture.body.id}/close`, {
+      method: 'PATCH',
+      token: tokens.techA!,
+    });
   });
 });

@@ -8,6 +8,8 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { AuthorizationService } from '../auth/authorization.service';
 import { requireAcademicStage } from '../../common/constants/academics';
 import { normalizeSection } from '../../common/utils/section.util';
+import { COVER_NOTE_PREFIX } from '../../common/constants/coverage';
+import { notCoveredWhere } from '../../common/utils/coverage.util';
 import type { AuthenticatedUser } from '../../common/types/authenticated-user';
 
 interface FollowupFilters {
@@ -193,6 +195,7 @@ export class FollowupService {
             lectureId: { in: closedIds },
             studentId: { in: studentIds },
             status: 'PRESENT',
+            ...notCoveredWhere(),
           },
         }),
         this.prisma.attendanceRecord.count({
@@ -200,6 +203,7 @@ export class FollowupService {
             lectureId: { in: closedIds },
             studentId: { in: studentIds },
             status: 'ABSENT',
+            ...notCoveredWhere(),
           },
         }),
       ]);
@@ -273,6 +277,8 @@ export class FollowupService {
             where: {
               lectureId: { in: closedIds },
               studentId: { in: studentIds },
+              // Covered rows are display credits, not attendance.
+              ...notCoveredWhere(),
             },
             select: { studentId: true, status: true },
           })
@@ -413,8 +419,13 @@ export class FollowupService {
       orderBy: { lecture: { startedAt: 'desc' } },
     });
 
-    const present = records.filter((record) => record.status === 'PRESENT').length;
-    const absent = records.filter((record) => record.status === 'ABSENT').length;
+    // The listing below keeps every row (including "حاضر عبر…" coverage
+    // credits, rendered distinctly); the statistics skip them.
+    const statsRecords = records.filter(
+      (record) => !record.note || !record.note.startsWith(COVER_NOTE_PREFIX),
+    );
+    const present = statsRecords.filter((record) => record.status === 'PRESENT').length;
+    const absent = statsRecords.filter((record) => record.status === 'ABSENT').length;
     const total = present + absent;
 
     const activeLectures = await this.prisma.lecture.count({
@@ -454,6 +465,7 @@ export class FollowupService {
         courseCode: record.lecture.course?.code || null,
         courseName: record.lecture.course?.name || null,
         status: record.status,
+        note: record.note,
       })),
     };
   }

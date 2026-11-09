@@ -724,9 +724,12 @@ describe('student QR-only attendance', () => {
 
 describe('core lecture flow', () => {
   it('creates a lecture with the actor as conductor, then closes it', async () => {
+    // Head of department has no pre-seeded ACTIVE lecture; lecturerA/techA/lecturerB
+    // each already conduct an open fixture lecture, and the API rejects a second
+    // open session per conductor.
     const created = await api('/api/lectures', {
       method: 'POST',
-      token: tokens.lecturerA!,
+      token: tokens.head!,
       body: {
         name: 'محاضرة اختبار',
         studyPeriod: 'MORNING',
@@ -735,13 +738,14 @@ describe('core lecture flow', () => {
       },
     });
     assert.equal(created.status, 201);
-    assert.equal(created.body.createdByUserId, userIds.lecturerA);
-    assert.equal(created.body.conductedByUserId, userIds.lecturerA);
+    assert.equal(created.body.createdByUserId, userIds.head);
+    assert.equal(created.body.conductedByUserId, userIds.head);
     assert.equal(created.body.status, 'ACTIVE');
+    assert.equal(created.body.sectionId, ids.sectionOne);
 
     const closed = await api(`/api/lectures/${created.body.id}/close`, {
       method: 'PATCH',
-      token: tokens.lecturerA!,
+      token: tokens.head!,
     });
     assert.equal(closed.status, 200);
     assert.equal(closed.body.lectureId, created.body.id);
@@ -751,10 +755,26 @@ describe('core lecture flow', () => {
     );
 
     const reloaded = await api(`/api/lectures/${created.body.id}`, {
-      token: tokens.lecturerA!,
+      token: tokens.head!,
     });
     assert.equal(reloaded.status, 200);
     assert.equal(reloaded.body.status, 'CLOSED');
+  });
+
+  it('blocks a second open lecture for the same conductor', async () => {
+    // lectureMine is still ACTIVE, so lecturerA cannot open another session.
+    const second = await api('/api/lectures', {
+      method: 'POST',
+      token: tokens.lecturerA!,
+      body: {
+        name: 'محاضرة ثانية متزامنة',
+        studyPeriod: 'MORNING',
+        section: '1',
+        courseId: ids.courseStage2,
+      },
+    });
+    assert.equal(second.status, 400);
+    assert.match(String(second.body.message), /مفتوحة/);
   });
 });
 

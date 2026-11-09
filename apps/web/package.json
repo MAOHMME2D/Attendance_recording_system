@@ -8,6 +8,7 @@
     "dev": "next dev --port 3000 --hostname 0.0.0.0",
     "build": "next build && node copy-standalone-assets.js",
     "typecheck": "tsc --noEmit",
+    "test": "node --test",
     "start": "next start --port 3000 --hostname 0.0.0.0"
   },
   "dependencies": {

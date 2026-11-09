@@ -1,4 +1,13 @@
-import { IsIn, IsNotEmpty, IsOptional, IsString, MaxLength } from 'class-validator';
+import {
+  ArrayMaxSize,
+  ArrayMinSize,
+  IsArray,
+  IsIn,
+  IsNotEmpty,
+  IsOptional,
+  IsString,
+  MaxLength,
+} from 'class-validator';
 
 export class CreateLectureDto {
   @IsString()
@@ -7,7 +16,7 @@ export class CreateLectureDto {
   name!: string;
 
   @IsOptional()
-  @IsIn(['MORNING', 'EVENING'], { message: 'نوع الدراسة غير صالح' })
+  @IsIn(['MORNING', 'EVENING'], { message: 'الفترة الدراسية غير صحيحة' })
   studyPeriod?: 'MORNING' | 'EVENING';
 
   @IsOptional()
@@ -15,11 +24,19 @@ export class CreateLectureDto {
   @MaxLength(120)
   section?: string;
 
-  /** Stable section reference; preferred over the free-text `section`. */
+  /** Stable section reference; kept for backwards compatibility (single section). */
   @IsOptional()
   @IsString()
   @MaxLength(64)
   sectionId?: string;
+
+  /** Stable section references; several sections may share one lecture. */
+  @IsOptional()
+  @IsArray()
+  @ArrayMinSize(1, { message: 'اختر شعبة واحدة على الأقل' })
+  @ArrayMaxSize(50)
+  @IsString({ each: true })
+  sectionIds?: string[];
 
   @IsOptional()
   @IsString()

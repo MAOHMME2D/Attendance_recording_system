@@ -44,6 +44,7 @@ export class LectureController {
       body.courseId,
       user,
       body.sectionId,
+      body.sectionIds,
     );
   }
 

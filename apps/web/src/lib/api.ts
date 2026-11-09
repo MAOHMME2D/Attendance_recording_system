@@ -262,6 +262,7 @@ export const lectureApi = {
     section?: string,
     courseId?: string,
     sectionId?: string,
+    sectionIds?: string[],
   ) =>
     apiFetch<any>('/lectures', {
       method: 'POST',
@@ -271,6 +272,7 @@ export const lectureApi = {
         section,
         ...(courseId ? { courseId } : {}),
         ...(sectionId ? { sectionId } : {}),
+        ...(sectionIds && sectionIds.length > 0 ? { sectionIds } : {}),
       }),
     }),
 
@@ -654,6 +656,77 @@ export const assignmentApi = {
     apiFetch<{ success: boolean }>(`/assignments/${id}`, { method: 'DELETE' }),
 };
 
+// ============ Weekly timetable ============
+export const TIMETABLE_DAYS = [
+  { value: 0, label: 'الأحد' },
+  { value: 1, label: 'الإثنين' },
+  { value: 2, label: 'الثلاثاء' },
+  { value: 3, label: 'الأربعاء' },
+  { value: 4, label: 'الخميس' },
+  { value: 5, label: 'الجمعة' },
+  { value: 6, label: 'السبت' },
+] as const;
+
+export interface TimetableItem {
+  id: string;
+  courseId: string;
+  sectionId: string;
+  dayOfWeek: number;
+  dayLabel?: string;
+  startTime: string;
+  endTime: string;
+  createdAt?: string;
+  updatedAt?: string;
+  course: { id: string; code: string; name: string; stage: number };
+  section: { id: string; name: string; stage: number; studyPeriod?: string; label?: string | null };
+}
+
+export interface TimetableInput {
+  courseId: string;
+  sectionId: string;
+  dayOfWeek: number;
+  startTime: string;
+  endTime: string;
+}
+
+export const timetableApi = {
+  getAll: (filters: {
+    courseId?: string;
+    sectionId?: string;
+    dayOfWeek?: number | string;
+    stage?: number | string;
+    studyPeriod?: string;
+  } = {}) => {
+    const params = new URLSearchParams();
+    if (filters.courseId) params.append('courseId', filters.courseId);
+    if (filters.sectionId) params.append('sectionId', filters.sectionId);
+    if (filters.dayOfWeek !== undefined && filters.dayOfWeek !== '') {
+      params.append('dayOfWeek', String(filters.dayOfWeek));
+    }
+    if (filters.stage !== undefined && filters.stage !== '') {
+      params.append('stage', String(filters.stage));
+    }
+    if (filters.studyPeriod) params.append('studyPeriod', filters.studyPeriod);
+    const q = params.toString();
+    return apiFetch<TimetableItem[]>(`/timetable${q ? `?${q}` : ''}`);
+  },
+
+  create: (data: TimetableInput) =>
+    apiFetch<TimetableItem>('/timetable', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  update: (id: string, data: Partial<TimetableInput>) =>
+    apiFetch<TimetableItem>(`/timetable/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+
+  delete: (id: string) =>
+    apiFetch<{ success: boolean }>(`/timetable/${id}`, { method: 'DELETE' }),
+};
+
 // ============ Read-only student follow-up ============
 export interface FollowupCourse {
   id: string;
@@ -748,6 +821,7 @@ export interface FollowupStudentDetail {
     courseCode: string | null;
     courseName: string | null;
     status: string;
+    note: string | null;
   }>;
 }
 
