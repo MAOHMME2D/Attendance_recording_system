@@ -1,6 +1,5 @@
 // RUNTIME DATABASE IS POSTGRESQL.
 // Migrations live in prisma/migrations/ (0001_init, 0002_online_foundation,
-// 0003_staff_management, 0004_phase2_academics).
 // See docs/POSTGRES_MIGRATION.md.
 datasource db {
   provider = "postgresql"
