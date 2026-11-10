@@ -232,9 +232,11 @@ export function CameraScanner({
       const config = {
         fps: 30, // 30 FPS for instant responsiveness
         qrbox: (viewfinderWidth: number, viewfinderHeight: number) => {
+          // html5-qrcode throws when a dimension is < 50px. Clamp so the
+          // viewfinder never fails on narrow/never-sized containers.
           return {
-            width: Math.floor(viewfinderWidth * 0.96),
-            height: Math.floor(viewfinderHeight * 0.96),
+            width: Math.max(50, Math.floor(viewfinderWidth * 0.96)),
+            height: Math.max(50, Math.floor(viewfinderHeight * 0.96)),
           };
         },
         aspectRatio: 1.777778,

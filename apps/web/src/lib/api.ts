@@ -2,7 +2,10 @@ function getApiBase(): string {
   if (typeof window !== 'undefined') {
     return '/api';
   }
-  return process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001/api';
+  if (process.env.NEXT_PUBLIC_API_URL) return process.env.NEXT_PUBLIC_API_URL;
+  return process.env.NODE_ENV === 'production'
+    ? 'https://attendanceapi-production-8b4e.up.railway.app/api'
+    : 'http://localhost:3001/api';
 }
 
 /**
@@ -14,10 +17,13 @@ export function getWsBase(): string {
   const configured = process.env.NEXT_PUBLIC_WS_ORIGIN;
   if (configured) return configured;
   if (typeof window !== 'undefined') {
+    if (process.env.NODE_ENV === 'production') {
+      return 'https://attendanceapi-production-8b4e.up.railway.app';
+    }
     const port = process.env.NEXT_PUBLIC_API_PORT || '3001';
     return `${window.location.protocol}//${window.location.hostname}:${port}`;
   }
-  return 'http://localhost:3001';
+  return process.env.NEXT_PUBLIC_WS_ORIGIN || 'http://localhost:3001';
 }
 
 /** Error carrying the HTTP status so pages can distinguish 401/403/etc. */
