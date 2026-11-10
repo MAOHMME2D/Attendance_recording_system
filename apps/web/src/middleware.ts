@@ -18,6 +18,12 @@ export function middleware(request: NextRequest) {
     return NextResponse.next();
   }
 
+  // Socket.IO handshakes are authenticated by the gateway itself (cookie or
+  // bearer token). Proxying them must not be turned into an HTML redirect.
+  if (pathname.startsWith('/socket.io')) {
+    return NextResponse.next();
+  }
+
   const hasSession = Boolean(request.cookies.get(SESSION_COOKIE)?.value);
   if (hasSession) {
     return NextResponse.next();

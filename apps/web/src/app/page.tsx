@@ -180,7 +180,10 @@ function HomeContent() {
     }
 
     const socket = io(`${getWsBase()}/attendance`, {
-      transports: ['websocket', 'polling'],
+      // Start with polling: it works through HTTP proxies (Vercel) and carries
+      // the same-origin session cookie. Socket.IO upgrades to WebSocket when the
+      // host supports it, so this is the safe order everywhere.
+      transports: ['polling', 'websocket'],
       withCredentials: true,
     });
 
