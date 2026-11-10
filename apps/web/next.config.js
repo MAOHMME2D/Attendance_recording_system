@@ -19,6 +19,14 @@ const nextConfig = {
         source: '/api/:path*',
         destination: `${proxyTarget}/api/:path*`,
       },
+      // Same-origin WebSocket path. Platforms that support upgrade proxying
+      // (self-hosted / local dev) deliver realtime events; elsewhere the UI
+      // falls back to polling. Never point the socket at a different host than
+      // the page: the HttpOnly session cookie is host-scoped.
+      {
+        source: '/socket.io/:path*',
+        destination: `${proxyTarget}/socket.io/:path*`,
+      },
     ];
   },
 };

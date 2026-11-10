@@ -9,21 +9,24 @@ function getApiBase(): string {
 }
 
 /**
- * WebSocket origin. The Next.js rewrite proxy only handles HTTP, so realtime
- * connections go directly to the API origin. Cookies are host-scoped, so the
- * HttpOnly session cookie is sent to this origin as well.
+ * WebSocket origin.
+ *
+ * The HttpOnly session cookie is host-scoped: it is only sent back to the
+ * origin that issued it. A cross-origin socket target (a different host than
+ * the page) therefore cannot authenticate and must never be used silently.
+ *
+ * By default the socket is opened against the page origin. The `/socket.io`
+ * rewrite in next.config.js forwards it to the API when the platform supports
+ * WebSocket upgrades. When it does not, the client falls back to HTTP polling
+ * (see the attendance page) and the UI keeps working.
  */
 export function getWsBase(): string {
   const configured = process.env.NEXT_PUBLIC_WS_ORIGIN;
   if (configured) return configured;
   if (typeof window !== 'undefined') {
-    if (process.env.NODE_ENV === 'production') {
-      return 'https://attendanceapi-production-8b4e.up.railway.app';
-    }
-    const port = process.env.NEXT_PUBLIC_API_PORT || '3001';
-    return `${window.location.protocol}//${window.location.hostname}:${port}`;
+    return window.location.origin;
   }
-  return process.env.NEXT_PUBLIC_WS_ORIGIN || 'http://localhost:3001';
+  return 'http://localhost:3001';
 }
 
 /** Error carrying the HTTP status so pages can distinguish 401/403/etc. */

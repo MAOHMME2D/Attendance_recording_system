@@ -1,9 +1,8 @@
-'use client';
+﻿'use client';
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { lectureApi, attendanceApi, studentApi, sectionApi, courseApi, SectionItem, CourseItem, stageLabel, getWsBase, ApiError } from '../lib/api';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
 import { io, Socket } from 'socket.io-client';
 import * as XLSX from 'xlsx';
 import CameraScanner from '../components/camera/CameraScanner';
@@ -33,7 +32,6 @@ interface StudentOption {
 
 function HomeContent() {
   const { can } = useAuth();
-  const router = useRouter();
   const canManualAttendance = can(PERMISSIONS.ATTENDANCE_MANUAL);
   const canManageSections = can(PERMISSIONS.SECTIONS_MANAGE);
   const canLoadStudentOptions = can(PERMISSIONS.STUDENT_OPTIONS);
@@ -154,6 +152,9 @@ function HomeContent() {
 
   // Socket ref
   const socketRef = useRef<Socket | null>(null);
+  // Realtime is optional (the page polls below). After a few failed attempts the
+  // socket is dropped silently instead of retrying forever.
+  const socketFailuresRef = useRef(0);
 
   // Fetch the minimal student list used by the manual-attendance autocomplete.
   // Technical lecturers and roles without STUDENT_OPTIONS never receive it.
@@ -184,12 +185,25 @@ function HomeContent() {
     });
 
     socket.on('connect', () => {
+      socketFailuresRef.current = 0;
       socket.emit('lecture:join', { lectureId });
     });
 
+    // A socket that cannot authenticate must NEVER bounce the user back to
+    // /login: the session cookie may be valid while the socket target is a
+    // different origin (host-scoped cookies are not sent there). Doing so made
+    // an authenticated session loop between "/" and "/login" forever.
     socket.on('auth:error', () => {
+      socketFailuresRef.current = 3;
       socket.disconnect();
-      router.replace('/login');
+    });
+
+    socket.on('connect_error', () => {
+      socketFailuresRef.current += 1;
+      if (socketFailuresRef.current >= 3) {
+        // Give up on realtime; the polling fallback keeps attendance fresh.
+        socket.disconnect();
+      }
     });
 
     socket.on('lecture:join:denied', (payload: { message?: string }) => {
@@ -213,7 +227,7 @@ function HomeContent() {
     });
 
     socketRef.current = socket;
-  }, [router]);
+  }, []);
 
   // Restore active lecture on load
   useEffect(() => {
