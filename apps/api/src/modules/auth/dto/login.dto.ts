@@ -8,7 +8,7 @@ export class LoginDto {
 
   @IsString()
   @IsNotEmpty({ message: 'كلمة المرور مطلوبة' })
-  @MinLength(8, { message: 'كلمة المرور قصيرة جداً' })
+  @MinLength(6, { message: 'كلمة المرور قصيرة جداً' })
   @MaxLength(200)
   password!: string;
 }

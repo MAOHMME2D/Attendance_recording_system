@@ -18,7 +18,6 @@ import {
 import * as XLSX from 'xlsx';
 import StudentQrCardModal from '../../components/cards/StudentQrCardModal';
 import BulkStudentCardsModal from '../../components/cards/BulkStudentCardsModal';
-import SectionManagerModal from '../../components/modals/SectionManagerModal';
 import ResetAbsencesModal from '../../components/modals/ResetAbsencesModal';
 import AttendancePdfReportModal from '../../components/modals/AttendancePdfReportModal';
 import { useAuth, PERMISSIONS } from '../../lib/auth';
@@ -165,7 +164,6 @@ function parseSpreadsheet(rows: unknown[][]): ImportRow[] {
 export default function StudentsPage() {
   const { can } = useAuth();
   const canManageStudents = can(PERMISSIONS.STUDENTS_MANAGE);
-  const canManageSections = can(PERMISSIONS.SECTIONS_MANAGE);
   const canResetAbsences = can(PERMISSIONS.ABSENCES_RESET);
   const canIssueQr = can(PERMISSIONS.QR_ISSUE);
 
@@ -188,7 +186,6 @@ export default function StudentsPage() {
   const [showBulkPrintModal, setShowBulkPrintModal] = useState(false);
 
   // Existing modals
-  const [showSectionModal, setShowSectionModal] = useState(false);
   const [showResetModal, setShowResetModal] = useState(false);
   const [showPdfReportModal, setShowPdfReportModal] = useState(false);
 
@@ -202,6 +199,11 @@ export default function StudentsPage() {
   // Delete confirmation
   const [deleteTarget, setDeleteTarget] = useState<StudentListItem | null>(null);
   const [deleteLoading, setDeleteLoading] = useState(false);
+
+  // Multi-select for bulk deletion
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
+  const [bulkDeleteLoading, setBulkDeleteLoading] = useState(false);
 
   // Import modal
   const [showImportModal, setShowImportModal] = useState(false);
@@ -316,6 +318,7 @@ export default function StudentsPage() {
 
   useEffect(() => {
     setPage(1);
+    setSelectedIds(new Set());
   }, [stageFilter, periodFilter, sectionFilter, searchTerm]);
 
   // ---------------- Form handlers ----------------
@@ -419,12 +422,71 @@ export default function StudentsPage() {
         'تم حذف الطالب. تُحفظ سجلات الحضور السابقة ويُخفى الطالب من القوائم.',
       );
       if (selectedStudent?.id === deleteTarget.id) setSelectedStudent(null);
+      setSelectedIds((current) => {
+        const next = new Set(current);
+        next.delete(deleteTarget.id);
+        return next;
+      });
       setDeleteTarget(null);
       await loadStudents();
     } catch (err) {
       setError(errorMessage(err));
     } finally {
       setDeleteLoading(false);
+    }
+  };
+
+  // ---------------- Multi-select / bulk delete ----------------
+  const toggleSelected = (id: string) => {
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const pagedAllSelected =
+    pagedStudents.length > 0 && pagedStudents.every((student) => selectedIds.has(student.id));
+
+  const toggleSelectPage = () => {
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      if (pagedAllSelected) {
+        pagedStudents.forEach((student) => next.delete(student.id));
+      } else {
+        pagedStudents.forEach((student) => next.add(student.id));
+      }
+      return next;
+    });
+  };
+
+  const handleBulkDelete = async () => {
+    if (selectedIds.size === 0) return;
+    setBulkDeleteLoading(true);
+    setError(null);
+    let deleted = 0;
+    let failed = 0;
+    for (const id of Array.from(selectedIds)) {
+      try {
+        await studentApi.delete(id);
+        deleted += 1;
+      } catch {
+        failed += 1;
+      }
+    }
+    setBulkDeleteLoading(false);
+    setBulkDeleteOpen(false);
+    setSelectedIds(new Set());
+    setSelectedStudent(null);
+    await loadStudents();
+    if (failed > 0) {
+      setError(`تم حذف ${deleted} طالبًا، وتعذّر حذف ${failed} طالبًا. أعد المحاولة للمتبقين.`);
+    }
+    if (deleted > 0) {
+      setSuccessBanner(
+        `تم حذف ${deleted} طالبًا من القوائم مع الحفاظ على سجلات الحضور السابقة.`,
+      );
     }
   };
 
@@ -600,6 +662,7 @@ export default function StudentsPage() {
               <button
                 className="btn btn-sm"
                 onClick={() => setShowResetModal(true)}
+                title="تصفير سجلات الحضور والغياب لبداية كورس جديد"
                 style={{
                   fontSize: '12px',
                   backgroundColor: '#FEF2F2',
@@ -608,7 +671,22 @@ export default function StudentsPage() {
                   fontWeight: '700',
                 }}
               >
-                🔄 تصفير الغيابات
+                🔄 تصفير سجلات الكورس
+              </button>
+            )}
+            {canManageStudents && selectedIds.size > 0 && (
+              <button
+                className="btn btn-sm"
+                onClick={() => setBulkDeleteOpen(true)}
+                style={{
+                  fontSize: '12px',
+                  backgroundColor: '#B91C1C',
+                  color: '#FFFFFF',
+                  border: 'none',
+                  fontWeight: '800',
+                }}
+              >
+                🗑️ حذف المحدد ({selectedIds.size})
               </button>
             )}
             {canIssueQr && (
@@ -801,17 +879,6 @@ export default function StudentsPage() {
                 style={{ fontSize: '13px' }}
               />
             </div>
-
-            {canManageSections && (
-              <button
-                type="button"
-                className="btn btn-ghost btn-sm"
-                onClick={() => setShowSectionModal(true)}
-                style={{ fontSize: '12.5px' }}
-              >
-                ⚙️ إدارة الشُعب
-              </button>
-            )}
           </div>
 
           <div style={{ marginTop: '12px', fontSize: '12.5px', color: '#6B7280' }}>
@@ -823,6 +890,46 @@ export default function StudentsPage() {
             )}
           </div>
         </div>
+
+        {/* Bulk selection bar */}
+        {selectedIds.size > 0 && (
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: '12px',
+              flexWrap: 'wrap',
+              background: '#FEF2F2',
+              border: '1px solid #FCA5A5',
+              borderRadius: '12px',
+              padding: '10px 14px',
+              marginBottom: '14px',
+            }}
+          >
+            <span style={{ fontSize: '13px', fontWeight: '800', color: '#991B1B' }}>
+              تم تحديد {selectedIds.size} طالب
+            </span>
+            <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                onClick={() => setSelectedIds(new Set())}
+                style={{ fontSize: '12px' }}
+              >
+                إلغاء التحديد
+              </button>
+              <button
+                type="button"
+                className="btn btn-danger btn-sm"
+                onClick={() => setBulkDeleteOpen(true)}
+                style={{ fontSize: '12px' }}
+              >
+                حذف المحدد
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Students list */}
         {loading ? (
@@ -857,6 +964,15 @@ export default function StudentsPage() {
               <table className="attendance-table" style={{ fontSize: '13px' }}>
                 <thead>
                   <tr>
+                    <th style={{ width: '40px', textAlign: 'center' }}>
+                      <input
+                        type="checkbox"
+                        aria-label="تحديد كل الطلاب في الصفحة"
+                        checked={pagedAllSelected}
+                        onChange={toggleSelectPage}
+                        style={{ width: '16px', height: '16px', cursor: 'pointer' }}
+                      />
+                    </th>
                     <th style={{ width: '46px', textAlign: 'center' }}>ت</th>
                     <th>اسم الطالب / الباركود</th>
                     <th style={{ textAlign: 'center' }}>المرحلة</th>
@@ -870,7 +986,19 @@ export default function StudentsPage() {
                 </thead>
                 <tbody>
                   {pagedStudents.map((student) => (
-                    <tr key={student.id}>
+                    <tr
+                      key={student.id}
+                      style={selectedIds.has(student.id) ? { background: '#FEF2F2' } : undefined}
+                    >
+                      <td style={{ textAlign: 'center' }}>
+                        <input
+                          type="checkbox"
+                          aria-label={`تحديد ${student.name}`}
+                          checked={selectedIds.has(student.id)}
+                          onChange={() => toggleSelected(student.id)}
+                          style={{ width: '16px', height: '16px', cursor: 'pointer' }}
+                        />
+                      </td>
                       <td style={{ textAlign: 'center', color: 'var(--text-muted)', fontWeight: '700' }}>
                         {student.orderIndex ?? '-'}
                       </td>
@@ -918,12 +1046,30 @@ export default function StudentsPage() {
             {/* Mobile cards */}
             <div className="students-mobile-list">
               {pagedStudents.map((student) => (
-                <div key={student.id} className="glass-card" style={{ padding: '14px 16px' }}>
+                <div
+                  key={student.id}
+                  className="glass-card"
+                  style={{
+                    padding: '14px 16px',
+                    ...(selectedIds.has(student.id)
+                      ? { border: '1.5px solid #FCA5A5', background: '#FEF2F2' }
+                      : {}),
+                  }}
+                >
                   <div style={{ display: 'flex', justifyContent: 'space-between', gap: '10px', alignItems: 'flex-start' }}>
-                    <div style={{ minWidth: 0 }}>
-                      <div style={{ fontWeight: '800', fontSize: '15.5px', color: '#111827' }}>{student.name}</div>
-                      <div style={{ fontFamily: 'monospace', fontSize: '11.5px', color: '#6B7280' }}>
-                        {student.studentCode}
+                    <div style={{ display: 'flex', gap: '10px', alignItems: 'flex-start', minWidth: 0 }}>
+                      <input
+                        type="checkbox"
+                        aria-label={`تحديد ${student.name}`}
+                        checked={selectedIds.has(student.id)}
+                        onChange={() => toggleSelected(student.id)}
+                        style={{ width: '18px', height: '18px', cursor: 'pointer', marginTop: '3px' }}
+                      />
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ fontWeight: '800', fontSize: '15.5px', color: '#111827' }}>{student.name}</div>
+                        <div style={{ fontFamily: 'monospace', fontSize: '11.5px', color: '#6B7280' }}>
+                          {student.studentCode}
+                        </div>
                       </div>
                     </div>
                     <PeriodBadge period={student.studyPeriod} />
@@ -1378,6 +1524,49 @@ export default function StudentsPage() {
         </div>
       )}
 
+      {/* Bulk delete confirmation */}
+      {bulkDeleteOpen && (
+        <div
+          className="modal-backdrop animate-fade-in"
+          onClick={() => !bulkDeleteLoading && setBulkDeleteOpen(false)}
+          style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.65)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '20px', zIndex: 1000 }}
+        >
+          <div
+            className="glass-card animate-slide-up"
+            onClick={(event) => event.stopPropagation()}
+            style={{ maxWidth: '460px', width: '100%', padding: '24px' }}
+          >
+            <h3 style={{ fontSize: '18px', fontWeight: '800', color: '#111827', marginBottom: '8px' }}>
+              حذف {selectedIds.size} طالبًا
+            </h3>
+            <p style={{ fontSize: '13.5px', color: '#4B5563', lineHeight: 1.8 }}>
+              سيُخفى الطلاب المحددون من القوائم، وتبقى سجلات حضورهم السابقة محفوظة في التقارير.
+              هل تريد المتابعة؟
+            </p>
+            <div style={{ display: 'flex', gap: '10px', marginTop: '18px' }}>
+              <button
+                type="button"
+                className="btn btn-ghost"
+                onClick={() => setBulkDeleteOpen(false)}
+                disabled={bulkDeleteLoading}
+                style={{ flex: 1, fontSize: '13px' }}
+              >
+                إلغاء
+              </button>
+              <button
+                type="button"
+                className="btn btn-danger"
+                onClick={handleBulkDelete}
+                disabled={bulkDeleteLoading}
+                style={{ flex: 1, fontSize: '13px', fontWeight: '700' }}
+              >
+                {bulkDeleteLoading ? 'جارٍ الحذف...' : 'تأكيد الحذف'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* QR card modal */}
       <StudentQrCardModal
         student={selectedStudentForCard}
@@ -1388,19 +1577,6 @@ export default function StudentsPage() {
         <BulkStudentCardsModal
           students={filteredStudents}
           onClose={() => setShowBulkPrintModal(false)}
-        />
-      )}
-
-      {canManageSections && (
-        <SectionManagerModal
-          isOpen={showSectionModal}
-          onClose={() => setShowSectionModal(false)}
-          onSectionsChanged={() => {
-            loadSections();
-            loadStudents();
-          }}
-          initialPeriod={periodFilter === 'EVENING' ? 'EVENING' : 'MORNING'}
-          initialStage={stageFilter === 'ALL' ? 2 : Number(stageFilter)}
         />
       )}
 

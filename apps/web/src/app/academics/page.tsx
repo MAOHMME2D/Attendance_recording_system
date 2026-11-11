@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import * as XLSX from 'xlsx';
 import Navbar from '../../components/layout/Navbar';
 import {
   assignmentApi,
@@ -81,6 +82,7 @@ export default function AcademicsPage() {
     sectionId: string;
     dayOfWeek: string;
   }>({ courseId: '', sectionId: '', dayOfWeek: '' });
+  const [editTimetableId, setEditTimetableId] = useState<string | null>(null);
 
   // Section form
   const [sectionForm, setSectionForm] = useState({
@@ -338,10 +340,69 @@ export default function AcademicsPage() {
       return;
     }
     runAction(async () => {
-      await timetableApi.create(timetableForm);
+      if (editTimetableId) {
+        await timetableApi.update(editTimetableId, timetableForm);
+      } else {
+        await timetableApi.create(timetableForm);
+      }
       setTimetableForm((form) => ({ ...form, courseId: '', sectionId: '' }));
+      setEditTimetableId(null);
       await loadTimetable();
-    }, 'تم إضافة الموعد إلى الجدول');
+    }, editTimetableId ? 'تم تحديث موعد الجدول' : 'تم إضافة الموعد إلى الجدول');
+  };
+
+  const startEditTimetableEntry = (entry: TimetableItem) => {
+    setEditTimetableId(entry.id);
+    setTimetableForm({
+      courseId: entry.course.id,
+      sectionId: entry.section.id,
+      dayOfWeek: entry.dayOfWeek,
+      startTime: entry.startTime,
+      endTime: entry.endTime,
+    });
+    setError(null);
+    if (typeof window !== 'undefined') {
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+  };
+
+  const cancelEditTimetable = () => {
+    setEditTimetableId(null);
+    setTimetableForm((form) => ({ ...form, courseId: '', sectionId: '' }));
+  };
+
+  const handleExportTimetableExcel = () => {
+    if (timetableEntries.length === 0) {
+      setError('لا توجد مواعيد في الجدول لتصديرها');
+      return;
+    }
+    const rows = timetableEntries.map((entry, index) => ({
+      'ت': index + 1,
+      'المادة': `${entry.course.code} — ${entry.course.name}`,
+      'المرحلة': stageLabel(entry.course.stage),
+      'الشعبة': entry.section.name,
+      'الدراسة': entry.section.studyPeriod === 'EVENING' ? 'مسائية' : 'صباحية',
+      'اليوم': entry.dayLabel,
+      'من': entry.startTime,
+      'إلى': entry.endTime,
+    }));
+    const worksheet = XLSX.utils.json_to_sheet(rows);
+    worksheet['!cols'] = [
+      { wch: 6 },
+      { wch: 34 },
+      { wch: 12 },
+      { wch: 10 },
+      { wch: 10 },
+      { wch: 12 },
+      { wch: 9 },
+      { wch: 9 },
+    ];
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'الجدول الدراسي');
+    XLSX.writeFile(
+      workbook,
+      `الجدول_الدراسي_${new Date().toISOString().slice(0, 10)}.xlsx`,
+    );
   };
 
   const handleDeleteTimetableEntry = (entry: TimetableItem) => {
@@ -418,7 +479,7 @@ export default function AcademicsPage() {
             </h1>
           </div>
           <p style={{ color: 'var(--text-secondary)', fontSize: '14px' }}>
-            إدارة الشعب والمواد الدراسية وإسناد المواد إلى المحاضرين والمحاضرين التقنيين.
+            إدارة الشعب والمواد الدراسية وإسناد المواد إلى التدريسيين والتدريسيين الخارجيين.
           </p>
         </div>
 
@@ -948,7 +1009,7 @@ export default function AcademicsPage() {
                 style={{ padding: '18px' }}
               >
                 <h2 style={{ fontSize: '16px', fontWeight: '800', marginBottom: '6px' }}>
-                  إضافة موعد إلى الجدول
+                  {editTimetableId ? 'تعديل موعد في الجدول' : 'إضافة موعد إلى الجدول'}
                 </h2>
                 <p style={{ fontSize: '12px', color: 'var(--text-muted)', marginBottom: '12px', lineHeight: 1.7 }}>
                   الجدول يحدد يوم ووقت محاضرة كل مادة لكل شعبة. يُستخدم للسماح للطالب بالحضور
@@ -1045,14 +1106,25 @@ export default function AcademicsPage() {
                     </div>
                   </div>
                 </div>
-                <button
-                  type="submit"
-                  className="btn btn-primary"
-                  style={{ marginTop: '14px' }}
-                  disabled={actionLoading}
-                >
-                  إضافة الموعد
-                </button>
+                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginTop: '14px' }}>
+                  <button
+                    type="submit"
+                    className="btn btn-primary"
+                    disabled={actionLoading}
+                  >
+                    {editTimetableId ? 'حفظ التعديل' : 'إضافة الموعد'}
+                  </button>
+                  {editTimetableId && (
+                    <button
+                      type="button"
+                      className="btn btn-ghost"
+                      onClick={cancelEditTimetable}
+                      disabled={actionLoading}
+                    >
+                      إلغاء التعديل
+                    </button>
+                  )}
+                </div>
               </form>
             )}
 
@@ -1071,6 +1143,16 @@ export default function AcademicsPage() {
                   الجدول الدراسي ({timetableEntries.length})
                 </h2>
                 <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                  <button
+                    type="button"
+                    className="btn btn-sm"
+                    onClick={handleExportTimetableExcel}
+                    disabled={timetableEntries.length === 0}
+                    title="تنزيل الجدول كملف Excel"
+                    style={{ fontSize: '12.5px', fontWeight: '700' }}
+                  >
+                    ⬇️ تنزيل الجدول (Excel)
+                  </button>
                   <select
                     className="input"
                     style={{ width: 'auto' }}
@@ -1136,7 +1218,7 @@ export default function AcademicsPage() {
                         <th style={{ textAlign: 'center' }}>من</th>
                         <th style={{ textAlign: 'center' }}>إلى</th>
                         <th>المرحلة</th>
-                        {canManageTimetable && <th style={{ textAlign: 'center' }}>حذف</th>}
+                        {canManageTimetable && <th style={{ textAlign: 'center' }}>إجراءات</th>}
                       </tr>
                     </thead>
                     <tbody>
@@ -1159,14 +1241,24 @@ export default function AcademicsPage() {
                           <td>{stageLabel(entry.course.stage)}</td>
                           {canManageTimetable && (
                             <td style={{ textAlign: 'center' }}>
-                              <button
-                                type="button"
-                                className="btn btn-sm"
-                                style={{ color: '#B91C1C' }}
-                                onClick={() => handleDeleteTimetableEntry(entry)}
-                              >
-                                حذف
-                              </button>
+                              <div style={{ display: 'flex', gap: '6px', justifyContent: 'center', flexWrap: 'wrap' }}>
+                                <button
+                                  type="button"
+                                  className="btn btn-sm"
+                                  onClick={() => startEditTimetableEntry(entry)}
+                                  title="تعديل سريع لهذا الموعد"
+                                >
+                                  تعديل
+                                </button>
+                                <button
+                                  type="button"
+                                  className="btn btn-sm"
+                                  style={{ color: '#B91C1C' }}
+                                  onClick={() => handleDeleteTimetableEntry(entry)}
+                                >
+                                  حذف
+                                </button>
+                              </div>
                             </td>
                           )}
                         </tr>
@@ -1186,11 +1278,11 @@ export default function AcademicsPage() {
                 style={{ padding: '18px' }}
               >
                 <h2 style={{ fontSize: '16px', fontWeight: '800', marginBottom: '12px' }}>
-                  إسناد مادة إلى محاضر
+                  إسناد مادة إلى تدريسي
                 </h2>
                 <div className="academics-form-grid">
                   <div>
-                    <label className="academics-label">المحاضر</label>
+                    <label className="academics-label">التدريسي</label>
                     <select
                       className="input"
                       value={assignmentForm.staffUserId}
@@ -1231,7 +1323,7 @@ export default function AcademicsPage() {
                 </div>
                 {assignableStaff.length === 0 && (
                   <p style={{ color: '#B45309', fontSize: '13px', marginTop: '10px' }}>
-                    لا يوجد محاضرون أو محاضرون تقنيون نشطون. أضفهم من صفحة الموظفين أولاً.
+                    لا يوجد تدريسيون أو تدريسيون خارجيون نشطون. أضفهم من صفحة الموظفين أولاً.
                   </p>
                 )}
                 <button

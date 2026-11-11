@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Param,
   Patch,
@@ -30,7 +31,8 @@ function clientIp(req: Request): string {
 /**
  * Staff administration. Every route requires MANAGE_STAFF, and StaffService
  * applies the stricter Registrar role-target policy. There is deliberately no
- * public registration endpoint and no hard-delete route.
+ * public registration endpoint. `DELETE /staff/:id` only removes accounts with
+ * no teaching history; the rest are archived so records keep their links.
  */
 @Controller('staff')
 @RequirePermissions(PERMISSIONS.MANAGE_STAFF)
@@ -79,5 +81,14 @@ export class StaffController {
     @Req() req: Request,
   ) {
     return this.staffService.resetPassword(id, dto.password, user, clientIp(req));
+  }
+
+  @Delete(':id')
+  remove(
+    @Param('id') id: string,
+    @CurrentUser() user: AuthenticatedUser,
+    @Req() req: Request,
+  ) {
+    return this.staffService.remove(id, user, clientIp(req));
   }
 }

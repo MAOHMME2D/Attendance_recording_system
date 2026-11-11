@@ -7,7 +7,6 @@ import { io, Socket } from 'socket.io-client';
 import * as XLSX from 'xlsx';
 import CameraScanner from '../components/camera/CameraScanner';
 import Navbar from '../components/layout/Navbar';
-import SectionManagerModal from '../components/modals/SectionManagerModal';
 import AttendancePdfReportModal from '../components/modals/AttendancePdfReportModal';
 import RequireAuth from '../components/auth/RequireAuth';
 import { useAuth, PERMISSIONS } from '../lib/auth';
@@ -33,7 +32,6 @@ interface StudentOption {
 function HomeContent() {
   const { can } = useAuth();
   const canManualAttendance = can(PERMISSIONS.ATTENDANCE_MANUAL);
-  const canManageSections = can(PERMISSIONS.SECTIONS_MANAGE);
   const canLoadStudentOptions = can(PERMISSIONS.STUDENT_OPTIONS);
 
   // State for creating a new lecture. A lecture is bound to one or more
@@ -45,7 +43,6 @@ function HomeContent() {
   const [dbSections, setDbSections] = useState<SectionItem[]>([]);
   const [courses, setCourses] = useState<CourseItem[]>([]);
   const [courseId, setCourseId] = useState('');
-  const [showSectionModal, setShowSectionModal] = useState(false);
   const [showSummaryPdfModal, setShowSummaryPdfModal] = useState(false);
 
   // Load dynamic sections from database
@@ -620,28 +617,6 @@ function HomeContent() {
                   <label style={{ fontSize: '13px', fontWeight: '700', color: '#374151' }}>
                     شعب المحاضرة (شعبة واحدة على الأقل):
                   </label>
-                  {canManageSections && (
-                    <button
-                      type="button"
-                      onClick={() => setShowSectionModal(true)}
-                      title="إضافة أو حذف شُعب"
-                      style={{
-                        background: '#EEF2FF',
-                        color: '#4F46E5',
-                        border: '1px solid #C7D2FE',
-                        borderRadius: '6px',
-                        padding: '3px 10px',
-                        fontSize: '11px',
-                        fontWeight: '700',
-                        cursor: 'pointer',
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '4px',
-                      }}
-                    >
-                      ⚙️ إدارة الشُعب
-                    </button>
-                  )}
                 </div>
 
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(130px, 1fr))', gap: '8px' }}>
@@ -1480,15 +1455,6 @@ function HomeContent() {
             </div>
           </div>
         )}
-        {/* Section Management Modal */}
-        <SectionManagerModal
-          isOpen={showSectionModal}
-          onClose={() => setShowSectionModal(false)}
-          onSectionsChanged={loadDynamicSections}
-          initialPeriod={lectureStudyPeriod}
-          initialStage={courseStage ?? 2}
-        />
-
         {/* Closed Lecture Attendance & Absences PDF Modal */}
         {closedSummary && (
           <AttendancePdfReportModal

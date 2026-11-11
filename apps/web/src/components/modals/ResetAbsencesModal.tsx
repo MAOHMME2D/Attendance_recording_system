@@ -41,7 +41,7 @@ export default function ResetAbsencesModal({
     currentStudyPeriod === 'EVENING' ? 'EVENING' : 'MORNING',
   );
   const [sectionId, setSectionId] = useState<string>(currentSectionId || '');
-  const [resetType, setResetType] = useState<'ABSENCES_ONLY' | 'ALL_ATTENDANCE'>('ABSENCES_ONLY');
+  const [resetType, setResetType] = useState<'ABSENCES_ONLY' | 'ALL_ATTENDANCE'>('ALL_ATTENDANCE');
   const [sections, setSections] = useState<SectionItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -136,10 +136,10 @@ export default function ResetAbsencesModal({
       }
 
       const res = await studentApi.resetAbsences(payload);
-      onSuccess(res.message || 'تم تصفير الغيابات بنجاح');
+      onSuccess(res.message || 'تم تصفير السجلات بنجاح');
       onClose();
     } catch (err: any) {
-      setError(err.message || 'حدث خطأ أثناء تصفير الغيابات');
+      setError(err.message || 'حدث خطأ أثناء تصفير السجلات');
     } finally {
       setLoading(false);
     }
@@ -205,10 +205,10 @@ export default function ResetAbsencesModal({
             </div>
             <div>
               <h3 style={{ margin: 0, fontSize: '18px', fontWeight: 'bold', color: '#991B1B' }}>
-                تصفير الغيابات
+                تصفير سجلات الكورس
               </h3>
               <p style={{ margin: 0, fontSize: '12px', color: '#6B7280' }}>
-                إعادة ضبط عداد وسجلات غيابات الطلاب
+                بداية نظيفة لكورس جديد: مسح الحضور والغياب والإجمالي والسجل
               </p>
             </div>
           </div>
@@ -420,36 +420,6 @@ export default function ResetAbsencesModal({
                   gap: '10px',
                   padding: '10px 12px',
                   borderRadius: '8px',
-                  border: resetType === 'ABSENCES_ONLY' ? '1px solid #DC2626' : '1px solid #E5E7EB',
-                  background: resetType === 'ABSENCES_ONLY' ? '#FEF2F2' : '#F9FAFB',
-                  cursor: 'pointer',
-                }}
-              >
-                <input
-                  type="radio"
-                  name="resetType"
-                  value="ABSENCES_ONLY"
-                  checked={resetType === 'ABSENCES_ONLY'}
-                  onChange={() => setResetType('ABSENCES_ONLY')}
-                  style={{ marginTop: '3px' }}
-                />
-                <div>
-                  <strong style={{ fontSize: '13px', color: '#111827', display: 'block' }}>
-                    تصفير الغيابات فقط (موصى به)
-                  </strong>
-                  <span style={{ fontSize: '12px', color: '#6B7280' }}>
-                    تصفير عداد الغياب وحذف سجلات الغياب السابقة مع الحفاظ على سجلات حضور الطلاب.
-                  </span>
-                </div>
-              </label>
-
-              <label
-                style={{
-                  display: 'flex',
-                  alignItems: 'flex-start',
-                  gap: '10px',
-                  padding: '10px 12px',
-                  borderRadius: '8px',
                   border: resetType === 'ALL_ATTENDANCE' ? '1px solid #DC2626' : '1px solid #E5E7EB',
                   background: resetType === 'ALL_ATTENDANCE' ? '#FEF2F2' : '#F9FAFB',
                   cursor: 'pointer',
@@ -465,10 +435,40 @@ export default function ResetAbsencesModal({
                 />
                 <div>
                   <strong style={{ fontSize: '13px', color: '#DC2626', display: 'block' }}>
-                    تصفير شامل (الحضور والغياب والبدء من الصفر)
+                    تصفير شامل لبداية الكورس الثاني (موصى به)
                   </strong>
                   <span style={{ fontSize: '12px', color: '#6B7280' }}>
-                    مسح جميع سجلات الحضور والغياب للبدء بفصل دراسي جديد كلياً.
+                    حذف جميع سجلات الحضور والغياب وإجمالي المحاضرات والسجل، والبدء من الصفر.
+                  </span>
+                </div>
+              </label>
+
+              <label
+                style={{
+                  display: 'flex',
+                  alignItems: 'flex-start',
+                  gap: '10px',
+                  padding: '10px 12px',
+                  borderRadius: '8px',
+                  border: resetType === 'ABSENCES_ONLY' ? '1px solid #DC2626' : '1px solid #E5E7EB',
+                  background: resetType === 'ABSENCES_ONLY' ? '#FEF2F2' : '#F9FAFB',
+                  cursor: 'pointer',
+                }}
+              >
+                <input
+                  type="radio"
+                  name="resetType"
+                  value="ABSENCES_ONLY"
+                  checked={resetType === 'ABSENCES_ONLY'}
+                  onChange={() => setResetType('ABSENCES_ONLY')}
+                  style={{ marginTop: '3px' }}
+                />
+                <div>
+                  <strong style={{ fontSize: '13px', color: '#111827', display: 'block' }}>
+                    تصفير الغيابات فقط
+                  </strong>
+                  <span style={{ fontSize: '12px', color: '#6B7280' }}>
+                    حذف سجلات الغياب فقط مع الحفاظ على سجلات حضور الطلاب وإجمالي المحاضرات.
                   </span>
                 </div>
               </label>
@@ -488,8 +488,9 @@ export default function ResetAbsencesModal({
               lineHeight: '1.6',
             }}
           >
-            ⚠️ <strong>تنبيه مهم:</strong> عملية التصفير نهائية ولا يمكن التراجع عنها. سيتم تحديث إحصائيات الطلاب
-            المحددين فوراً في قاعدة البيانات.
+            ⚠️ <strong>تنبيه مهم:</strong> عملية التصفير نهائية ولا يمكن التراجع عنها. عند اختيار
+            «تصفير شامل» تُحذف سجلات الحضور والغياب وإجمالي المحاضرات وسجل الطالب ضمن النطاق
+            المحدد فقط، وتُحدَّث إحصائيات الطلاب فوراً.
           </div>
 
           {/* Confirmation Input */}
@@ -549,7 +550,7 @@ export default function ResetAbsencesModal({
                 gap: '6px',
               }}
             >
-              {loading ? 'جاري التصفير...' : 'تأكيد تصفير الغيابات'}
+              {loading ? 'جاري التصفير...' : 'تأكيد تصفير السجلات'}
             </button>
           </div>
         </form>

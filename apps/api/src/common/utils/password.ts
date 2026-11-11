@@ -4,42 +4,31 @@ import { randomInt } from 'crypto';
 /** Cost factor used everywhere a staff password is hashed. */
 export const BCRYPT_ROUNDS = 12;
 
-/** Minimum length for every staff password, including first-run accounts. */
-export const PASSWORD_MIN_LENGTH = 12;
+/**
+ * Minimum length for every staff password, including first-run accounts.
+ * Six characters keeps day-to-day use simple; there are no character-class
+ * requirements, so a lecturer can use whatever combination they prefer.
+ */
+export const PASSWORD_MIN_LENGTH = 6;
 export const PASSWORD_MAX_LENGTH = 200;
 
 /**
- * Returns an Arabic error message when the password is too weak, or null when
- * it is acceptable. The policy is intentionally strict because these accounts
- * control attendance records and staff administration.
+ * Returns an Arabic error message when the password is too short, or null when
+ * it is acceptable. Only the length is enforced: letters, digits and symbols
+ * are all accepted without additional complexity rules.
  */
 export function validatePasswordStrength(
   password: string,
-  staffId?: string,
+  _staffId?: string,
 ): string | null {
   if (typeof password !== 'string' || password.length === 0) {
     return 'كلمة المرور مطلوبة';
   }
   if (password.length < PASSWORD_MIN_LENGTH) {
-    return `كلمة المرور يجب أن تكون ${PASSWORD_MIN_LENGTH} حرفًا على الأقل`;
+    return `كلمة المرور يجب أن تكون ${PASSWORD_MIN_LENGTH} أحرف على الأقل`;
   }
   if (password.length > PASSWORD_MAX_LENGTH) {
     return `كلمة المرور يجب ألا تتجاوز ${PASSWORD_MAX_LENGTH} حرفًا`;
-  }
-  if (!/[a-z]/.test(password)) {
-    return 'كلمة المرور يجب أن تحتوي على حرف لاتيني صغير واحد على الأقل';
-  }
-  if (!/[A-Z]/.test(password)) {
-    return 'كلمة المرور يجب أن تحتوي على حرف لاتيني كبير واحد على الأقل';
-  }
-  if (!/[0-9]/.test(password)) {
-    return 'كلمة المرور يجب أن تحتوي على رقم واحد على الأقل';
-  }
-  if (!/[^A-Za-z0-9]/.test(password)) {
-    return 'كلمة المرور يجب أن تحتوي على رمز خاص واحد على الأقل';
-  }
-  if (staffId && password.toLowerCase().includes(staffId.toLowerCase())) {
-    return 'كلمة المرور يجب ألا تحتوي على معرف الموظف';
   }
   return null;
 }

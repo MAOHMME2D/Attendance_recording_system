@@ -29,7 +29,7 @@ export class CreateStaffDto {
   role!: string;
 
   @IsString()
-  @MinLength(12, { message: 'كلمة المرور يجب أن تكون 12 حرفًا على الأقل' })
+  @MinLength(6, { message: 'كلمة المرور يجب أن تكون 6 أحرف على الأقل' })
   @MaxLength(200)
   password!: string;
 }

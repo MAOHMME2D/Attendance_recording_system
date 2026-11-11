@@ -32,6 +32,39 @@ const LECTURE_SECTIONS_INCLUDE = {
   },
 } as const;
 
+/**
+ * Attendance rows carry the student's *current* section, not the lecture's
+ * original section. Reports must show where the student belongs today, even
+ * when a lecture was recorded for a different section earlier.
+ */
+const ATTENDANCE_WITH_SECTION_INCLUDE = {
+  orderBy: { registeredAt: 'asc' as const },
+  include: {
+    student: {
+      select: {
+        section: true,
+        sectionRef: { select: { name: true } },
+      },
+    },
+  },
+} as const;
+
+type AttendanceWithStudentSection = {
+  student?: {
+    section: string | null;
+    sectionRef: { name: string } | null;
+  } | null;
+};
+
+/** Flattens the student's current section onto each attendance row. */
+function flattenAttendanceSection<T extends AttendanceWithStudentSection>(record: T) {
+  const { student, ...rest } = record;
+  return {
+    ...rest,
+    section: student?.sectionRef?.name || student?.section || null,
+  };
+}
+
 function getAllLocalIPs(): { ip: string; name: string }[] {
   const interfaces = os.networkInterfaces();
   const list: { ip: string; name: string }[] = [];
@@ -377,9 +410,7 @@ export class LectureService {
         conductedBy: {
           select: { id: true, staffId: true, fullName: true, role: true },
         },
-        attendances: {
-          orderBy: { registeredAt: 'asc' },
-        },
+        attendances: ATTENDANCE_WITH_SECTION_INCLUDE,
       },
     });
 
@@ -397,6 +428,7 @@ export class LectureService {
 
     return {
       ...lecture,
+      attendances: lecture.attendances.map(flattenAttendanceSection),
       serverAddress: `http://${localIP}:${webPort}`,
       availableAddresses: allIPs.map((i) => ({
         name: i.name,
@@ -414,7 +446,9 @@ export class LectureService {
       where: {
         status: 'ACTIVE',
         deletedAt: null,
-        ...this.authorization.lectureScope(actor),
+        // Registration is private to the staff member who opened the lecture.
+        // A second lecturer (or an administrator) must not resume it.
+        conductedByUserId: actor.id,
       },
       orderBy: { startedAt: 'desc' },
       include: {
@@ -424,9 +458,7 @@ export class LectureService {
         conductedBy: {
           select: { id: true, staffId: true, fullName: true, role: true },
         },
-        attendances: {
-          orderBy: { registeredAt: 'asc' },
-        },
+        attendances: ATTENDANCE_WITH_SECTION_INCLUDE,
       },
     });
 
@@ -445,6 +477,7 @@ export class LectureService {
 
     return {
       ...lecture,
+      attendances: lecture.attendances.map(flattenAttendanceSection),
       serverAddress: `http://${localIP}:${webPort}`,
       availableAddresses: allIPs.map((i) => ({
         name: i.name,
@@ -815,7 +848,7 @@ export class LectureService {
    * lectures stay in the database but are not shown.
    */
   async getAllLectures(actor: AuthenticatedUser) {
-    return this.prisma.lecture.findMany({
+    const lectures = await this.prisma.lecture.findMany({
       where: { deletedAt: null, ...this.authorization.lectureScope(actor) },
       include: {
         course: { select: { id: true, code: true, name: true, stage: true } },
@@ -827,12 +860,15 @@ export class LectureService {
         _count: {
           select: { attendances: true },
         },
-        attendances: {
-          orderBy: { registeredAt: 'asc' },
-        },
+        attendances: ATTENDANCE_WITH_SECTION_INCLUDE,
       },
       orderBy: { createdAt: 'desc' },
     });
+
+    return lectures.map((lecture) => ({
+      ...lecture,
+      attendances: lecture.attendances.map(flattenAttendanceSection),
+    }));
   }
 
   /**
@@ -856,6 +892,33 @@ export class LectureService {
     }
     if (!this.authorization.canAccessLecture(actor, lecture)) {
       throw new ForbiddenException('لا تملك صلاحية الوصول إلى هذه المحاضرة');
+    }
+    return lecture;
+  }
+
+  /**
+   * Stricter than {@link assertCanAccessLecture}: attendance registration is
+   * private to the staff member who opened the lecture. Even administrative
+   * roles may only *read* another lecturer's session through reports; they
+   * cannot scan, toggle or add records to it.
+   */
+  async assertCanRegisterLecture(
+    actor: Pick<AuthenticatedUser, 'id' | 'role'>,
+    lectureId: string,
+  ) {
+    const lecture = await this.assertCanAccessLecture(actor, lectureId);
+    // A closed/archived lecture is rejected by the caller's writable check
+    // (HTTP 400) for every role, so ownership is only enforced while the
+    // lecture is actually open for registration.
+    if (lecture.status === 'ACTIVE') {
+      if (
+        lecture.conductedByUserId !== actor.id &&
+        lecture.createdByUserId !== actor.id
+      ) {
+        throw new ForbiddenException(
+          'التسجيل متاح فقط لمن فتح هذه المحاضرة. لا يمكنك الدخول على تسجيل محاضرة أخرى.',
+        );
+      }
     }
     return lecture;
   }

@@ -2486,3 +2486,111 @@ describe('phase 3b timetable and multi-section lectures', () => {
     });
   });
 });
+
+describe('registration privacy and current-section reports', () => {
+  it('only the staff member who opened a lecture can resume it', async () => {
+    // Close every still-open lecture so the creation below is allowed and the
+    // "other roles see nothing" assertions are unambiguous.
+    const openLectures = await prisma.lecture.findMany({
+      where: { status: 'ACTIVE' },
+      select: { id: true },
+    });
+    for (const openLecture of openLectures) {
+      await api(`/api/lectures/${openLecture.id}/close`, {
+        method: 'PATCH',
+        token: tokens.head!,
+      });
+    }
+
+    const created = await api('/api/lectures', {
+      method: 'POST',
+      token: tokens.lecturerA!,
+      body: {
+        name: 'محاضرة خصوصية التسجيل',
+        studyPeriod: 'MORNING',
+        courseId: ids.courseC1,
+        sectionId: ids.sectionS2A,
+      },
+    });
+    assert.equal(created.status, 201, JSON.stringify(created.body));
+
+    const mine = await api('/api/lectures/active/current', {
+      token: tokens.lecturerA!,
+    });
+    assert.equal(mine.status, 200, JSON.stringify(mine.body));
+    assert.equal(mine.body.id, created.body.id);
+
+    for (const otherToken of [tokens.lecturerB!, tokens.head!]) {
+      const other = await api('/api/lectures/active/current', {
+        token: otherToken,
+      });
+      assert.equal(other.status, 200, JSON.stringify(other.body));
+      assert.equal(other.body.status, 'NONE');
+    }
+
+    for (const otherToken of [tokens.lecturerB!, tokens.head!]) {
+      const manual = await api(`/api/attendance/${created.body.id}/manual`, {
+        method: 'POST',
+        token: otherToken,
+        body: { studentName: ids.codeA, status: 'PRESENT' },
+      });
+      assert.equal(manual.status, 403, JSON.stringify(manual.body));
+    }
+
+    const closed = await api(`/api/lectures/${created.body.id}/close`, {
+      method: 'PATCH',
+      token: tokens.lecturerA!,
+    });
+    assert.equal(closed.status, 200, JSON.stringify(closed.body));
+  });
+
+  it('shows each student’s current section instead of the old lecture section', async () => {
+    const currentSection = await prisma.section.findUnique({
+      where: { id: ids.sectionS2B },
+    });
+    assert.ok(currentSection);
+
+    const lecture = await prisma.lecture.create({
+      data: {
+        name: 'محاضرة تقرير الشعبة الحالية',
+        studyPeriod: 'MORNING',
+        section: '1',
+        sectionId: ids.sectionS1A,
+        status: 'CLOSED',
+        qrToken: 'phase2-current-section-report',
+        qrExpiresAt: new Date(Date.now() + 60 * 60 * 1000),
+        createdByUserId: userIds.lecturerA,
+        conductedByUserId: userIds.lecturerA,
+        closedAt: new Date(),
+      },
+    });
+    await prisma.attendanceRecord.create({
+      data: {
+        lectureId: lecture.id,
+        studentId: ids.studentA,
+        studentCode: ids.codeA,
+        studentName: 'طالب أ',
+        status: 'PRESENT',
+      },
+    });
+
+    await prisma.student.update({
+      where: { id: ids.studentA },
+      data: { sectionId: ids.sectionS2B, section: currentSection!.name },
+    });
+
+    const report = await api(`/api/lectures/${lecture.id}`, {
+      token: tokens.head!,
+    });
+    assert.equal(report.status, 200, JSON.stringify(report.body));
+    const row = report.body.attendances.find(
+      (entry: any) => entry.studentId === ids.studentA,
+    );
+    assert.ok(row, 'attendance row must be present');
+    assert.equal(
+      row.section,
+      currentSection!.name,
+      'reports must show the student’s current section',
+    );
+  });
+});

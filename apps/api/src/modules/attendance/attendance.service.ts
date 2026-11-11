@@ -202,7 +202,7 @@ export class AttendanceService {
       throw new BadRequestException('السجل غير موجود');
     }
 
-    const lecture = await this.lectureService.assertCanAccessLecture(
+    const lecture = await this.lectureService.assertCanRegisterLecture(
       actor,
       record.lectureId,
     );
@@ -277,7 +277,7 @@ export class AttendanceService {
     status: string,
     actor: AuthenticatedUser,
   ) {
-    const lecture = await this.lectureService.assertCanAccessLecture(actor, lectureId);
+    const lecture = await this.lectureService.assertCanRegisterLecture(actor, lectureId);
     await this.assertLectureWritable(lecture, actor, 'ATTENDANCE_MANUAL');
 
     const inputClean = studentIdentifier.trim();
@@ -413,7 +413,7 @@ export class AttendanceService {
     studentIdentifier: string,
     actor: AuthenticatedUser,
   ) {
-    const lecture = await this.lectureService.assertCanAccessLecture(actor, lectureId);
+    const lecture = await this.lectureService.assertCanRegisterLecture(actor, lectureId);
 
     if (lecture.status !== 'ACTIVE') {
       await this.audit.log({

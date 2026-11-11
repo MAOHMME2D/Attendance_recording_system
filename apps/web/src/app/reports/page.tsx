@@ -5,7 +5,6 @@ import { lectureApi, stageLabel } from '../../lib/api';
 import Link from 'next/link';
 import * as XLSX from 'xlsx';
 import Navbar from '../../components/layout/Navbar';
-import ResetAbsencesModal from '../../components/modals/ResetAbsencesModal';
 import AttendancePdfReportModal from '../../components/modals/AttendancePdfReportModal';
 import { formatAttendanceDate, formatAttendanceTime } from '../../lib/formatTime';
 import { useAuth, PERMISSIONS } from '../../lib/auth';
@@ -14,8 +13,13 @@ interface AttendanceRecord {
   id: string;
   studentName: string;
   studentCode?: string | null;
+  section?: string | null;
   status: string;
   registeredAt: string;
+}
+
+interface LectureSection {
+  section: { id: string; name: string; stage: number; studyPeriod: string };
 }
 
 interface Lecture {
@@ -23,6 +27,7 @@ interface Lecture {
   name: string;
   studyPeriod?: string | null;
   section?: string | null;
+  lectureSections?: LectureSection[];
   status: string;
   startedAt: string;
   closedAt: string | null;
@@ -32,18 +37,25 @@ interface Lecture {
   _count: { attendances: number };
 }
 
+/** Builds the report header from every section the lecture covered. */
+function lectureSectionLabel(lecture: Lecture): string {
+  const names = (lecture.lectureSections || [])
+    .map((entry) => entry.section?.name)
+    .filter((name): name is string => Boolean(name));
+  if (names.length > 1) return `الشُعب: ${names.join('، ')}`;
+  if (names.length === 1) return `شعبة ${names[0]}`;
+  return lecture.section ? `شعبة ${lecture.section}` : 'كافة الشُعب';
+}
+
 export default function ReportsPage() {
   const { can } = useAuth();
   const canDeleteLectures = can(PERMISSIONS.LECTURE_DELETE);
-  const canResetAbsences = can(PERMISSIONS.ABSENCES_RESET);
 
   const [lectures, setLectures] = useState<Lecture[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedLecture, setSelectedLecture] = useState<Lecture | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [deleteConfirm, setDeleteConfirm] = useState<{ id: string; name: string } | null>(null);
-  const [showResetModal, setShowResetModal] = useState(false);
-  const [successBanner, setSuccessBanner] = useState<string | null>(null);
   const [pdfLectureForReport, setPdfLectureForReport] = useState<Lecture | null>(null);
 
   useEffect(() => {
@@ -111,7 +123,7 @@ export default function ReportsPage() {
         'المرحلة': lecture.course ? stageLabel(lecture.course.stage) : '-',
         'المادة': lecture.course ? `${lecture.course.code} — ${lecture.course.name}` : '-',
         'الدراسة': (lecture.studyPeriod || 'MORNING') === 'EVENING' ? 'مسائي' : 'صباحي',
-        'الشعبة': lecture.section && lecture.section !== 'ALL' ? `شعبة ${lecture.section}` : 'الكل',
+        'الشعبة': lectureSectionLabel(lecture),
         'الحالة': lecture.status === 'ACTIVE' ? 'جارية' : 'منتهية',
         'تاريخ البدء': formatAttendanceDate(lecture.startedAt),
         'وقت البدء': formatAttendanceTime(lecture.startedAt, false),
@@ -230,26 +242,6 @@ export default function ReportsPage() {
           />
 
           <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-            {canResetAbsences && (
-              <button
-                className="btn btn-sm"
-                onClick={() => setShowResetModal(true)}
-                style={{
-                  fontSize: '13px',
-                  backgroundColor: '#FEF2F2',
-                  color: '#DC2626',
-                  border: '1px solid #FCA5A5',
-                  fontWeight: '700',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '6px',
-                  padding: '8px 14px',
-                }}
-              >
-                🔄 تصفير الغيابات
-              </button>
-            )}
-
             <button
               className="btn btn-sm"
               onClick={() => {
@@ -278,33 +270,6 @@ export default function ReportsPage() {
             </button>
           </div>
         </div>
-
-        {/* Success Banner */}
-        {successBanner && (
-          <div
-            style={{
-              padding: '12px 16px',
-              borderRadius: '12px',
-              backgroundColor: '#ECFDF5',
-              border: '1px solid #A7F3D0',
-              color: '#065F46',
-              marginBottom: '20px',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              fontSize: '14px',
-              fontWeight: '600',
-            }}
-          >
-            <span>✅ {successBanner}</span>
-            <button
-              onClick={() => setSuccessBanner(null)}
-              style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#065F46', fontSize: '16px' }}
-            >
-              ✕
-            </button>
-          </div>
-        )}
 
         {loading ? (
           <div className="empty-state">
@@ -499,9 +464,7 @@ export default function ReportsPage() {
                       </p>
                     )}
                     <p style={{ color: 'var(--text-muted)', fontSize: '12.5px', marginTop: '2px' }}>
-                      {selectedLecture.section && selectedLecture.section !== 'ALL'
-                        ? `الشُعب: ${selectedLecture.section}`
-                        : 'كافة الشُعب'}{' '}
+                      {lectureSectionLabel(selectedLecture)}{' '}
                       · {selectedLecture.studyPeriod === 'EVENING' ? 'مسائي' : 'صباحي'}
                     </p>
                   </div>
@@ -681,18 +644,6 @@ export default function ReportsPage() {
         </div>
       )}
 
-      {/* Reset Absences Modal */}
-      {canResetAbsences && (
-        <ResetAbsencesModal
-          isOpen={showResetModal}
-          onClose={() => setShowResetModal(false)}
-          onSuccess={(msg) => {
-            setSuccessBanner(msg);
-            loadLectures();
-          }}
-        />
-      )}
-
       {/* Attendance & Absences PDF Report Modal */}
       {pdfLectureForReport && (
         <AttendancePdfReportModal
@@ -704,9 +655,7 @@ export default function ReportsPage() {
               ? 'الدراسة المسائية'
               : 'الدراسة الصباحية'
           }
-          sectionLabel={
-            pdfLectureForReport.section ? `شعبة ${pdfLectureForReport.section}` : 'كافة الشُعب'
-          }
+          sectionLabel={lectureSectionLabel(pdfLectureForReport)}
           lectureDate={pdfLectureForReport.startedAt}
           records={pdfLectureForReport.attendances.map((rec) => ({
             id: rec.id,
@@ -715,7 +664,7 @@ export default function ReportsPage() {
             status: rec.status,
             registeredAt: rec.registeredAt,
             studyPeriod: pdfLectureForReport.studyPeriod || undefined,
-            section: pdfLectureForReport.section || undefined,
+            section: rec.section || undefined,
           }))}
         />
       )}

@@ -432,4 +432,84 @@ export class StaffService {
 
     return { success: true };
   }
+
+  /**
+   * Removes a staff account.
+   *
+   * Accounts with no teaching history are deleted outright. Accounts that are
+   * referenced by assignments, lectures or QR tokens are archived instead
+   * (deactivated and sessions revoked) so historical records keep their links
+   * and the audit trail stays intact. In both cases the caller learns which
+   * path was taken through the `archived` flag.
+   */
+  async remove(
+    id: string,
+    actor: AuthenticatedUser,
+    ipAddress: string,
+  ): Promise<{ success: true; archived: boolean }> {
+    const target = await this.findTarget(id);
+    this.assertTargetManageable(actor, target);
+
+    if (target.id === actor.id) {
+      throw new BadRequestException('لا يمكنك حذف حسابك الحالي');
+    }
+
+    const result = await this.prisma.$transaction(async (tx) => {
+      await this.acquireStaffRoleLock(tx);
+
+      const current = await tx.staffUser.findUnique({ where: { id } });
+      if (!current) throw new NotFoundException('حساب الموظف غير موجود');
+      this.assertTargetManageable(actor, current);
+
+      if (current.id === actor.id) {
+        throw new BadRequestException('لا يمكنك حذف حسابك الحالي');
+      }
+
+      if (
+        current.role === 'HEAD_OF_DEPARTMENT' &&
+        current.isActive &&
+        (await this.activeHeadCount(tx)) <= 1
+      ) {
+        throw new ConflictException('لا يمكن حذف آخر حساب رئيس قسم فعال');
+      }
+
+      // End every active session immediately, even when archiving.
+      await tx.staffSession.updateMany({
+        where: { userId: id, revokedAt: null },
+        data: { revokedAt: new Date() },
+      });
+
+      const [assignments, lectures, qrTokens] = await Promise.all([
+        tx.teachingAssignment.count({ where: { staffUserId: id } }),
+        tx.lecture.count({
+          where: {
+            OR: [{ createdByUserId: id }, { conductedByUserId: id }],
+          },
+        }),
+        tx.studentQrToken.count({ where: { createdByUserId: id } }),
+      ]);
+
+      if (assignments > 0 || lectures > 0 || qrTokens > 0) {
+        await tx.staffUser.update({
+          where: { id },
+          data: { isActive: false },
+        });
+        return { success: true as const, archived: true };
+      }
+
+      await tx.staffUser.delete({ where: { id } });
+      return { success: true as const, archived: false };
+    });
+
+    await this.audit.log({
+      actorUserId: actor.id,
+      action: result.archived ? 'STAFF_ARCHIVED' : 'STAFF_DELETED',
+      entityType: 'StaffUser',
+      entityId: target.id,
+      details: `staffId=${target.staffId}; role=${target.role}; archived=${result.archived}`,
+      ipAddress,
+    });
+
+    return result;
+  }
 }

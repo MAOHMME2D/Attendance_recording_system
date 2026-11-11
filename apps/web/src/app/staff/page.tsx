@@ -62,6 +62,9 @@ export default function StaffPage() {
 
   const [resetTarget, setResetTarget] = useState<ManagedStaff | null>(null);
   const [newPassword, setNewPassword] = useState('');
+  const [showCreatePassword, setShowCreatePassword] = useState(false);
+  const [showResetPassword, setShowResetPassword] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<ManagedStaff | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -180,6 +183,29 @@ export default function StaffPage() {
       ? member.role === 'LECTURER' || member.role === 'TECHNICAL_LECTURER'
       : true);
 
+  const handleDelete = async () => {
+    if (!deleteTarget) return;
+    clearMessages();
+    setBusy(true);
+    try {
+      const result = await staffApi.remove(deleteTarget.id);
+      setSuccess(
+        result.archived
+          ? `تمت أرشفة حساب ${deleteTarget.fullName} وإنهاء جلساته (له سجلات مرتبطة، لذا حُفظت بياناته).`
+          : `تم حذف حساب ${deleteTarget.fullName} نهائيًا.`,
+      );
+      if (editing?.id === deleteTarget.id) setEditing(null);
+      if (resetTarget?.id === deleteTarget.id) setResetTarget(null);
+      setDeleteTarget(null);
+      await load();
+    } catch (deleteError) {
+      setError(errorMessage(deleteError));
+      setDeleteTarget(null);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const actionsFor = (member: ManagedStaff) => {
     const editable = canEditMember(member);
     const isOwner = member.role === 'SYSTEM_OWNER';
@@ -226,6 +252,18 @@ export default function StaffPage() {
         >
           {member.isActive ? 'تعطيل' : 'تفعيل'}
         </button>
+        <button
+          type="button"
+          className="btn btn-danger btn-sm"
+          onClick={() => {
+            clearMessages();
+            setDeleteTarget(member);
+          }}
+          disabled={busy || isSelf}
+          title={isSelf ? 'لا يمكنك حذف حسابك الحالي' : 'حذف الحساب'}
+        >
+          حذف
+        </button>
       </div>
     );
   };
@@ -240,8 +278,8 @@ export default function StaffPage() {
             إدارة حسابات الموظفين
           </h1>
           <p style={{ color: 'var(--text-secondary)', fontSize: '14px' }}>
-            إنشاء المحاضرين والمحاضرين التقنيين، تعديل البيانات، تعطيل الحسابات، وإعادة تعيين
-            كلمات المرور.
+            إنشاء حسابات التدريسيين والتدريسيين الخارجيين، تعديل البيانات، تعطيل الحسابات،
+            إعادة تعيين كلمات المرور، وحذف الحسابات.
           </p>
         </div>
 
@@ -346,17 +384,39 @@ export default function StaffPage() {
 
               <label style={{ fontSize: '13px', fontWeight: 700 }}>
                 كلمة المرور الأولية
-                <input
-                  className="input"
-                  type="password"
-                  value={form.password}
-                  onChange={(event) => setForm({ ...form, password: event.target.value })}
-                  placeholder="12 حرفًا مع رموز وأرقام"
-                  autoComplete="new-password"
-                  minLength={12}
-                  required
-                  style={{ marginTop: '6px', width: '100%' }}
-                />
+                <div style={{ position: 'relative', marginTop: '6px' }}>
+                  <input
+                    className="input"
+                    type={showCreatePassword ? 'text' : 'password'}
+                    value={form.password}
+                    onChange={(event) => setForm({ ...form, password: event.target.value })}
+                    placeholder="6 أحرف على الأقل"
+                    autoComplete="new-password"
+                    minLength={6}
+                    required
+                    style={{ width: '100%', paddingInlineEnd: '46px' }}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowCreatePassword((value) => !value)}
+                    aria-label={showCreatePassword ? 'إخفاء كلمة المرور' : 'إظهار كلمة المرور'}
+                    title={showCreatePassword ? 'إخفاء كلمة المرور' : 'إظهار كلمة المرور'}
+                    style={{
+                      position: 'absolute',
+                      insetInlineEnd: '6px',
+                      top: '50%',
+                      transform: 'translateY(-50%)',
+                      background: 'transparent',
+                      border: 'none',
+                      cursor: 'pointer',
+                      fontSize: '17px',
+                      lineHeight: 1,
+                      padding: '4px',
+                    }}
+                  >
+                    {showCreatePassword ? '🙈' : '👁️'}
+                  </button>
+                </div>
               </label>
 
               <button
@@ -369,8 +429,8 @@ export default function StaffPage() {
               </button>
             </form>
             <p style={{ marginTop: '10px', fontSize: '12px', color: '#6B7280' }}>
-              كلمة المرور: 12 حرفًا على الأقل وتتضمن حرفًا كبيرًا وصغيرًا ورقمًا ورمزًا خاصًا.
-              لا تُعرض كلمة المرور مرة أخرى بعد الحفظ.
+              كلمة المرور: 6 أحرف أو أرقام على الأقل، ويمكنك استخدام أي تركيبة تريدها. لا تُعرض
+              كلمة المرور مرة أخرى بعد الحفظ.
             </p>
           </section>
         )}
@@ -458,16 +518,39 @@ export default function StaffPage() {
             >
               <label style={{ fontSize: '13px', fontWeight: 700, flex: '1 1 240px' }}>
                 كلمة المرور الجديدة
-                <input
-                  className="input"
-                  type="password"
-                  value={newPassword}
-                  onChange={(event) => setNewPassword(event.target.value)}
-                  autoComplete="new-password"
-                  minLength={12}
-                  required
-                  style={{ marginTop: '6px', width: '100%' }}
-                />
+                <div style={{ position: 'relative', marginTop: '6px' }}>
+                  <input
+                    className="input"
+                    type={showResetPassword ? 'text' : 'password'}
+                    value={newPassword}
+                    onChange={(event) => setNewPassword(event.target.value)}
+                    placeholder="6 أحرف على الأقل"
+                    autoComplete="new-password"
+                    minLength={6}
+                    required
+                    style={{ width: '100%', paddingInlineEnd: '46px' }}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowResetPassword((value) => !value)}
+                    aria-label={showResetPassword ? 'إخفاء كلمة المرور' : 'إظهار كلمة المرور'}
+                    title={showResetPassword ? 'إخفاء كلمة المرور' : 'إظهار كلمة المرور'}
+                    style={{
+                      position: 'absolute',
+                      insetInlineEnd: '6px',
+                      top: '50%',
+                      transform: 'translateY(-50%)',
+                      background: 'transparent',
+                      border: 'none',
+                      cursor: 'pointer',
+                      fontSize: '17px',
+                      lineHeight: 1,
+                      padding: '4px',
+                    }}
+                  >
+                    {showResetPassword ? '🙈' : '👁️'}
+                  </button>
+                </div>
               </label>
               <button type="submit" className="btn btn-primary" disabled={busy}>
                 تعيين كلمة المرور
@@ -612,11 +695,68 @@ export default function StaffPage() {
         </section>
 
         <p style={{ marginTop: '16px', fontSize: '12px', color: '#6B7280', lineHeight: 1.8 }}>
-          جميع عمليات الإنشاء والتعديل والتعطيل وإعادة تعيين كلمة المرور محمية من جهة الخادم
-          وتُسجَّل في سجل التدقيق. لا يمكن تعطيل آخر حساب رئيس قسم فعّال، ولا يمكن للمسجل إدارة
-          حساب رئيس القسم أو حساب مالك النظام التجريبي.
+          جميع عمليات الإنشاء والتعديل والتعطيل وإعادة تعيين كلمة المرور والحذف محمية من جهة
+          الخادم وتُسجَّل في سجل التدقيق. لا يمكن تعطيل أو حذف آخر حساب رئيس قسم فعّال، ولا يمكن
+          للمقرر إدارة حساب رئيس القسم أو حساب مالك النظام.
         </p>
       </main>
+
+      {deleteTarget && (
+        <div
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(15, 23, 42, 0.45)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: '20px',
+            zIndex: 60,
+          }}
+          onClick={() => !busy && setDeleteTarget(null)}
+        >
+          <div
+            className="glass-card"
+            style={{ background: '#FFFFFF', padding: '22px', maxWidth: '440px', width: '100%' }}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <h3 style={{ fontSize: '17px', fontWeight: 800, marginBottom: '8px' }}>
+              حذف حساب الموظف
+            </h3>
+            <p style={{ fontSize: '13.5px', color: '#4B5563', lineHeight: 1.8 }}>
+              هل تريد حذف حساب <strong>{deleteTarget.fullName}</strong> (المعرف:{' '}
+              <span style={{ direction: 'ltr', display: 'inline-block' }}>
+                {deleteTarget.staffId}
+              </span>
+              )؟
+            </p>
+            <p style={{ fontSize: '12.5px', color: '#92400E', background: '#FFFBEB', border: '1px solid #FDE68A', borderRadius: '10px', padding: '10px 12px', marginTop: '10px', lineHeight: 1.7 }}>
+              إذا كان للحساب إسنادات أو محاضرات أو رموز QR مرتبطة فسيُؤرشف (يُعطَّل وتُنهى جلساته)
+              للحفاظ على السجلات. وإلا فسيُحذف نهائيًا. لا يمكن التراجع.
+            </p>
+            <div style={{ display: 'flex', gap: '10px', marginTop: '16px' }}>
+              <button
+                type="button"
+                className="btn btn-ghost"
+                onClick={() => setDeleteTarget(null)}
+                disabled={busy}
+                style={{ flex: 1 }}
+              >
+                إلغاء
+              </button>
+              <button
+                type="button"
+                className="btn btn-danger"
+                onClick={handleDelete}
+                disabled={busy}
+                style={{ flex: 1 }}
+              >
+                {busy ? 'جارٍ الحذف...' : 'تأكيد الحذف'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <style jsx>{`
         .staff-table-scroll {

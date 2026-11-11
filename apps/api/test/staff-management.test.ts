@@ -688,8 +688,124 @@ describe('last active head of department protection', () => {
   });
 });
 
+describe('deleting staff accounts', () => {
+  async function createAccount(staffId: string) {
+    const created = await api('/api/staff', {
+      method: 'POST',
+      token: tokens.registrar,
+      body: {
+        staffId,
+        fullName: `حساب ${staffId}`,
+        role: 'LECTURER',
+        password: 'Short6',
+      },
+    });
+    assert.equal(created.status, 201, JSON.stringify(created.body));
+    return created.body.id as string;
+  }
+
+  it('accepts a six-character password without complexity rules', async () => {
+    const staffId = 'six-pass';
+    const created = await api('/api/staff', {
+      method: 'POST',
+      token: tokens.registrar,
+      body: {
+        staffId,
+        fullName: 'حساب بكلمة مرور قصيرة',
+        role: 'LECTURER',
+        password: 'abcdef',
+      },
+    });
+    assert.equal(created.status, 201, JSON.stringify(created.body));
+
+    const token = await login(staffId, 'abcdef');
+    assert.ok(token);
+
+    const deleted = await api(`/api/staff/${created.body.id}`, {
+      method: 'DELETE',
+      token: tokens.registrar,
+    });
+    assert.equal(deleted.status, 200, JSON.stringify(deleted.body));
+  });
+
+  it('permanently deletes an account that has no teaching history', async () => {
+    const userId = await createAccount('delete-me');
+    const deleted = await api(`/api/staff/${userId}`, {
+      method: 'DELETE',
+      token: tokens.registrar,
+    });
+    assert.equal(deleted.status, 200, JSON.stringify(deleted.body));
+    assert.equal(deleted.body.archived, false);
+
+    const row = await prisma.staffUser.findUnique({ where: { id: userId } });
+    assert.equal(row, null);
+  });
+
+  it('archives an account with linked lectures and revokes its sessions', async () => {
+    const userId = await createAccount('archive-me');
+    const session = await prisma.staffSession.create({
+      data: {
+        userId,
+        tokenHash: `test-token-${userId}`,
+        expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+      },
+    });
+    const lecture = await prisma.lecture.create({
+      data: {
+        name: 'محاضرة مرتبطة بالحساب',
+        qrToken: `qr_test_${userId}`,
+        qrExpiresAt: new Date(Date.now() + 60 * 60 * 1000),
+        createdByUserId: userId,
+        conductedByUserId: userId,
+      },
+    });
+
+    const deleted = await api(`/api/staff/${userId}`, {
+      method: 'DELETE',
+      token: tokens.registrar,
+    });
+    assert.equal(deleted.status, 200, JSON.stringify(deleted.body));
+    assert.equal(deleted.body.archived, true);
+
+    const row = await prisma.staffUser.findUnique({ where: { id: userId } });
+    assert.ok(row, 'archived accounts stay in the database');
+    assert.equal(row!.isActive, false);
+
+    const revoked = await prisma.staffSession.findUnique({
+      where: { id: session.id },
+    });
+    assert.ok(revoked!.revokedAt, 'archiving must end every active session');
+
+    const keptLecture = await prisma.lecture.findUnique({
+      where: { id: lecture.id },
+    });
+    assert.equal(keptLecture!.conductedByUserId, userId);
+  });
+
+  it('refuses to delete your own account or the system owner', async () => {
+    // Earlier protection tests may revoke the head's sessions, so sign in again.
+    const headToken = await login(STAFF_IDS.head, PASSWORDS.head);
+
+    const self = await api(`/api/staff/${ids.head}`, {
+      method: 'DELETE',
+      token: headToken,
+    });
+    assert.equal(self.status, 400);
+
+    const ownerRow = await prisma.staffUser.findUnique({
+      where: { staffId: STAFF_IDS.owner },
+    });
+    assert.ok(ownerRow);
+    const owner = await api(`/api/staff/${ownerRow!.id}`, {
+      method: 'DELETE',
+      token: headToken,
+    });
+    assert.equal(owner.status, 403);
+  });
+});
+
 describe('staff management audit trail', () => {
-  it('records setup, create, edit, deactivate, reactivate, and password reset', async () => {
+  it('records setup, create, edit, deactivate, reactivate, password reset, and deletion', async () => {
     const logs = await prisma.auditLog.findMany();
     const actions = new Set(logs.map((log) => log.action));
 
@@ -700,6 +816,8 @@ describe('staff management audit trail', () => {
       'STAFF_DEACTIVATED',
       'STAFF_REACTIVATED',
       'STAFF_PASSWORD_RESET',
+      'STAFF_DELETED',
+      'STAFF_ARCHIVED',
     ]) {
       assert.ok(actions.has(action), `missing audit action ${action}`);
     }

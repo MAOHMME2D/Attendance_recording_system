@@ -47,10 +47,10 @@ export type Permission = (typeof PERMISSIONS)[keyof typeof PERMISSIONS];
 
 export const ROLE_LABELS: Record<StaffRole, string> = {
   HEAD_OF_DEPARTMENT: 'رئيس القسم',
-  REGISTRAR: 'المسجل',
-  LECTURER: 'محاضر',
-  TECHNICAL_LECTURER: 'محاضر تقني',
-  SYSTEM_OWNER: 'مالك النظام (تجريبي)',
+  REGISTRAR: 'مقرر',
+  LECTURER: 'تدريسي',
+  TECHNICAL_LECTURER: 'تدريسي خارجي',
+  SYSTEM_OWNER: 'مالك النظام',
 };
 
 interface AuthContextValue {

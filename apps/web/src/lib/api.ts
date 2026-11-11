@@ -254,6 +254,11 @@ export const staffApi = {
       method: 'PATCH',
       body: JSON.stringify({ password }),
     }),
+
+  remove: (id: string) =>
+    apiFetch<{ success: boolean; archived: boolean }>(`/staff/${id}`, {
+      method: 'DELETE',
+    }),
 };
 
 // ============ Lectures ============

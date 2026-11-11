@@ -9,7 +9,6 @@ import { Server, Socket } from 'socket.io';
 import { Logger } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { AuthService } from '../auth/auth.service';
-import { AuthorizationService } from '../auth/authorization.service';
 import { getAllowedOrigins } from '../../common/utils/origins';
 import {
   SESSION_COOKIE_NAME,
@@ -45,7 +44,6 @@ export class AttendanceGateway implements OnGatewayConnection, OnGatewayDisconne
   constructor(
     private prisma: PrismaService,
     private authService: AuthService,
-    private authorization: AuthorizationService,
   ) {}
 
   /**
@@ -124,7 +122,11 @@ export class AttendanceGateway implements OnGatewayConnection, OnGatewayDisconne
       select: { id: true, createdByUserId: true, conductedByUserId: true },
     });
 
-    if (!lecture || !this.authorization.canAccessLecture(user, lecture)) {
+    if (
+      !lecture ||
+      (lecture.conductedByUserId !== user.id &&
+        lecture.createdByUserId !== user.id)
+    ) {
       client.emit('lecture:join:denied', {
         message: 'لا تملك صلاحية الانضمام إلى غرفة هذه المحاضرة',
       });
