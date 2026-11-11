@@ -1,0 +1,7 @@
+-- AlterTable Course
+ALTER TABLE "Course" ADD COLUMN IF NOT EXISTS "type" TEXT DEFAULT 'THEORETICAL';
+
+-- AlterTable TimetableEntry
+ALTER TABLE "TimetableEntry" ADD COLUMN IF NOT EXISTS "type" TEXT DEFAULT 'THEORETICAL';
+ALTER TABLE "TimetableEntry" ADD COLUMN IF NOT EXISTS "hall" TEXT;
+

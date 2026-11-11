@@ -28,4 +28,10 @@ export class UpdateCourseDto {
   @IsString()
   @MaxLength(500)
   description?: string;
+
+  /** THEORETICAL (نظري), PRACTICAL (عملي), or BOTH (نظري وعملي). */
+  @IsOptional()
+  @IsString()
+  @MaxLength(32)
+  type?: string;
 }

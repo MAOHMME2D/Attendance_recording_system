@@ -160,6 +160,8 @@ export class TimetableService {
       dayOfWeek: number;
       startTime: string;
       endTime: string;
+      type?: string;
+      hall?: string;
     },
     actor: AuthenticatedUser,
   ) {
@@ -183,6 +185,8 @@ export class TimetableService {
           dayOfWeek: dto.dayOfWeek,
           startTime: dto.startTime,
           endTime: dto.endTime,
+          type: dto.type || 'THEORETICAL',
+          hall: dto.hall?.trim() || null,
         },
         include: {
           course: { select: { id: true, code: true, name: true, stage: true } },
@@ -217,6 +221,8 @@ export class TimetableService {
       dayOfWeek?: number;
       startTime?: string;
       endTime?: string;
+      type?: string;
+      hall?: string;
     },
     actor: AuthenticatedUser,
   ) {
@@ -253,6 +259,8 @@ export class TimetableService {
           dayOfWeek,
           startTime,
           endTime,
+          ...(dto.type !== undefined ? { type: dto.type || 'THEORETICAL' } : {}),
+          ...(dto.hall !== undefined ? { hall: dto.hall?.trim() || null } : {}),
         },
         include: {
           course: { select: { id: true, code: true, name: true, stage: true } },

@@ -3,6 +3,7 @@ import {
   ConflictException,
   NotFoundException,
   BadRequestException,
+  ForbiddenException,
   Logger,
 } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -22,6 +23,7 @@ import { recomputeStudentStats } from '../../common/utils/student-stats.util';
 import { Prisma } from '@prisma/client';
 import * as crypto from 'crypto';
 import { ImportStudentsDto, ImportStudentRowDto } from './dto/import-students.dto';
+import { UpdateStudentCoursesDto } from './dto/update-student-courses.dto';
 
 interface StudentContext {
   stage: AcademicStage;
@@ -106,7 +108,12 @@ export class StudentService {
       if (matches.length === 1) {
         section = matches[0];
       } else if (matches.length > 1) {
-        errors.push('الشعبة موجودة في أكثر من دراسة؛ حدد نوع الدراسة');
+        const periodMatch = matches.find((m) => m.studyPeriod === input.studyPeriod);
+        if (periodMatch) {
+          section = periodMatch;
+        } else {
+          errors.push('الشعبة موجودة في أكثر من دراسة؛ حدد نوع الدراسة');
+        }
       } else {
         errors.push(`الشعبة (${input.section}) غير موجودة في هذه المرحلة`);
       }
@@ -230,12 +237,30 @@ export class StudentService {
       orderBy: [{ orderIndex: 'asc' }, { studentCode: 'asc' }],
     });
 
+    const customSettings = await this.prisma.systemSetting.findMany({
+      where: { key: { startsWith: 'STUDENT_COURSES_' } },
+    });
+    const enrollmentMap = new Map<
+      string,
+      { academicStatus: string; courseIds: string[]; notes?: string }
+    >();
+    for (const s of customSettings) {
+      try {
+        const studentId = s.key.replace('STUDENT_COURSES_', '');
+        const parsed = JSON.parse(s.value);
+        if (parsed && Array.isArray(parsed.courseIds)) {
+          enrollmentMap.set(studentId, parsed);
+        }
+      } catch {}
+    }
+
     return students.map((student, idx) => {
       // Attendance records are the only source of truth: active lectures are
       // excluded above, and stale stored counters are never used as a fallback.
       const totalPresent = student.attendances.filter((a) => a.status === 'PRESENT').length;
       const totalAbsent = student.attendances.filter((a) => a.status === 'ABSENT').length;
       const totalSessions = totalPresent + totalAbsent;
+      const custom = enrollmentMap.get(student.id);
 
       return {
         id: student.id,
@@ -250,6 +275,10 @@ export class StudentService {
         presentCount: totalPresent,
         absentCount: totalAbsent,
         totalLectures: totalSessions,
+        academicStatus: custom?.academicStatus || 'REGULAR',
+        customCourseCount: custom?.courseIds?.length ?? null,
+        isCustomEnrollment: Boolean(custom && custom.academicStatus !== 'REGULAR'),
+        enrollmentNotes: custom?.notes || null,
         createdAt: student.createdAt,
         history: student.attendances.map((a) => ({
           attendanceId: a.id,
@@ -318,10 +347,74 @@ export class StudentService {
       if (actor) await this.authorization.assertCanAccessCourse(actor, filters.courseId);
       const course = await this.prisma.course.findUnique({
         where: { id: filters.courseId },
-        select: { stage: true },
+        select: { id: true, stage: true },
       });
       if (!course) throw new NotFoundException('المادة غير موجودة');
-      where.stage = course.stage;
+
+      const customSettings = await this.prisma.systemSetting.findMany({
+        where: { key: { startsWith: 'STUDENT_COURSES_' } },
+      });
+      const carryOverStudentIds: string[] = [];
+      const excludedRepeatingStudentIds = new Set<string>();
+
+      for (const s of customSettings) {
+        try {
+          const studentId = s.key.replace('STUDENT_COURSES_', '');
+          const parsed = JSON.parse(s.value);
+          if (parsed && Array.isArray(parsed.courseIds)) {
+            if (parsed.academicStatus !== 'REGULAR') {
+              if (parsed.courseIds.includes(filters.courseId)) {
+                carryOverStudentIds.push(studentId);
+              } else {
+                excludedRepeatingStudentIds.add(studentId);
+              }
+            }
+          }
+        } catch {}
+      }
+
+      const baseWhere: any = {
+        deletedAt: null,
+        stage: course.stage,
+        ...(excludedRepeatingStudentIds.size > 0
+          ? { id: { notIn: Array.from(excludedRepeatingStudentIds) } }
+          : {}),
+      };
+      if (filters.studyPeriod) baseWhere.studyPeriod = filters.studyPeriod;
+      if (filters.sectionId) baseWhere.sectionId = filters.sectionId;
+      if (filters.section && filters.section !== 'ALL') {
+        baseWhere.section = normalizeSection(filters.section);
+      }
+
+      let queryWhere: any = baseWhere;
+      if (carryOverStudentIds.length > 0) {
+        const carryOverWhere: any = {
+          deletedAt: null,
+          id: { in: carryOverStudentIds },
+          stage: { not: course.stage },
+        };
+        if (filters.studyPeriod) carryOverWhere.studyPeriod = filters.studyPeriod;
+        if (filters.sectionId) carryOverWhere.sectionId = filters.sectionId;
+        if (filters.section && filters.section !== 'ALL') {
+          carryOverWhere.section = normalizeSection(filters.section);
+        }
+        queryWhere = { OR: [baseWhere, carryOverWhere] };
+      }
+
+      return this.prisma.student.findMany({
+        where: queryWhere,
+        select: {
+          id: true,
+          name: true,
+          studentCode: true,
+          stage: true,
+          studyPeriod: true,
+          section: true,
+          sectionId: true,
+          orderIndex: true,
+        },
+        orderBy: [{ orderIndex: 'asc' }, { studentCode: 'asc' }],
+      });
     } else if (filters.stage) {
       const stage = requireAcademicStage(filters.stage);
       await this.assertStageAllowed(actor, stage);
@@ -1030,15 +1123,26 @@ export class StudentService {
     const studentIds = students.map((s) => s.id);
 
     await this.prisma.$transaction(async (tx) => {
+      // ISS-02 Fix: Only delete attendance records belonging to CLOSED, non-deleted lectures
+      // Active (OPEN) lectures must never have their attendance records wiped during a reset.
+      const closedLectureCondition = {
+        status: 'CLOSED' as const,
+        deletedAt: null,
+      };
+
       if (resetType === 'ALL_ATTENDANCE') {
         await tx.attendanceRecord.deleteMany({
-          where: { studentId: { in: studentIds } },
+          where: {
+            studentId: { in: studentIds },
+            lecture: closedLectureCondition,
+          },
         });
       } else {
         await tx.attendanceRecord.deleteMany({
           where: {
             studentId: { in: studentIds },
             status: 'ABSENT',
+            lecture: closedLectureCondition,
           },
         });
       }
@@ -1071,5 +1175,142 @@ export class StudentService {
           ? `تم تصفير سجل الحضور والغياب بالكامل لـ ${students.length} طالب بنجاح`
           : `تم تصفير الغيابات لـ ${students.length} طالب بنجاح`,
     };
+  }
+
+  // ============================================================
+  // Academic Course Enrollment (Repeating & Carry-over Students)
+  // ============================================================
+
+  async getStudentEnrollment(studentId: string, actor: AuthenticatedUser) {
+    const student = await this.prisma.student.findUnique({
+      where: { id: studentId, deletedAt: null },
+      select: {
+        id: true,
+        name: true,
+        studentCode: true,
+        stage: true,
+        studyPeriod: true,
+        section: true,
+        sectionId: true,
+        sectionRef: { select: { name: true, label: true } },
+      },
+    });
+    if (!student) {
+      throw new NotFoundException('الطالب غير موجود');
+    }
+    if (actor && !isAdministrativeRole(actor.role)) {
+      await this.assertStageAllowed(actor, student.stage);
+    }
+
+    const allCourses = await this.prisma.course.findMany({
+      orderBy: [{ stage: 'asc' }, { code: 'asc' }],
+      select: { id: true, code: true, name: true, stage: true, description: true },
+    });
+
+    const setting = await this.prisma.systemSetting.findUnique({
+      where: { key: `STUDENT_COURSES_${studentId}` },
+    });
+
+    if (setting?.value) {
+      try {
+        const parsed = JSON.parse(setting.value);
+        if (parsed && Array.isArray(parsed.courseIds)) {
+          const enrolledCourses = allCourses.filter((c) => parsed.courseIds.includes(c.id));
+          return {
+            studentId: student.id,
+            studentName: student.name,
+            studentCode: student.studentCode,
+            stage: student.stage,
+            studyPeriod: student.studyPeriod,
+            section: student.section,
+            sectionLabel: student.sectionRef?.label || student.sectionRef?.name || null,
+            isCustom: true,
+            academicStatus: parsed.academicStatus || 'REPEAT',
+            courseIds: parsed.courseIds,
+            courses: enrolledCourses,
+            notes: parsed.notes || null,
+            updatedAt: parsed.updatedAt || null,
+            allCourses,
+          };
+        }
+      } catch {}
+    }
+
+    const defaultCourses = allCourses.filter((c) => c.stage === student.stage);
+    return {
+      studentId: student.id,
+      studentName: student.name,
+      studentCode: student.studentCode,
+      stage: student.stage,
+      studyPeriod: student.studyPeriod,
+      section: student.section,
+      sectionLabel: student.sectionRef?.label || student.sectionRef?.name || null,
+      isCustom: false,
+      academicStatus: 'REGULAR',
+      courseIds: defaultCourses.map((c) => c.id),
+      courses: defaultCourses,
+      notes: null,
+      updatedAt: null,
+      allCourses,
+    };
+  }
+
+  async updateStudentEnrollment(
+    studentId: string,
+    dto: UpdateStudentCoursesDto,
+    actor: AuthenticatedUser,
+  ) {
+    const student = await this.prisma.student.findUnique({
+      where: { id: studentId, deletedAt: null },
+      select: { id: true, name: true, stage: true },
+    });
+    if (!student) {
+      throw new NotFoundException('الطالب غير موجود');
+    }
+    if (actor && !isAdministrativeRole(actor.role)) {
+      throw new ForbiddenException('فقط المسؤول ومسجل الكلية يمكنهما تعديل مواد الطالب');
+    }
+
+    const key = `STUDENT_COURSES_${studentId}`;
+
+    if (dto.academicStatus === 'REGULAR') {
+      await this.prisma.systemSetting.deleteMany({ where: { key } });
+    } else {
+      const validCourses = await this.prisma.course.findMany({
+        where: { id: { in: dto.courseIds } },
+        select: { id: true },
+      });
+      const validIds = validCourses.map((c) => c.id);
+
+      const payload = {
+        studentId,
+        academicStatus: dto.academicStatus,
+        courseIds: validIds,
+        notes: dto.notes ? dto.notes.trim() : '',
+        updatedAt: new Date().toISOString(),
+      };
+
+      await this.prisma.systemSetting.upsert({
+        where: { key },
+        create: { key, value: JSON.stringify(payload) },
+        update: { value: JSON.stringify(payload) },
+      });
+    }
+
+    await this.prisma.auditLog.create({
+      data: {
+        actorUserId: actor.id,
+        action: 'UPDATE_STUDENT_COURSES',
+        entityType: 'Student',
+        entityId: student.id,
+        details: JSON.stringify({
+          academicStatus: dto.academicStatus,
+          courseCount: dto.courseIds.length,
+          notes: dto.notes || null,
+        }),
+      },
+    });
+
+    return this.getStudentEnrollment(studentId, actor);
   }
 }

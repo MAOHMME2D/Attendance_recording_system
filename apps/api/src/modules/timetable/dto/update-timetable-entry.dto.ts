@@ -39,4 +39,16 @@ export class UpdateTimetableEntryDto {
     message: 'وقت النهاية يجب أن يكون بصيغة HH:mm',
   })
   endTime?: string;
+
+  /** THEORETICAL (نظري) or PRACTICAL (عملي). */
+  @IsOptional()
+  @IsString()
+  @MaxLength(32)
+  type?: string;
+
+  /** القاعة أو المختبر */
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  hall?: string;
 }

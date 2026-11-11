@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import Navbar from '../../components/layout/Navbar';
 import { useAuth, PERMISSIONS, ROLE_LABELS } from '../../lib/auth';
+import CollapsibleSection from '../../components/ui/CollapsibleSection';
 import {
   ApiError,
   staffApi,
@@ -63,6 +64,15 @@ export default function StaffPage() {
   const [resetTarget, setResetTarget] = useState<ManagedStaff | null>(null);
   const [newPassword, setNewPassword] = useState('');
   const [showCreatePassword, setShowCreatePassword] = useState(false);
+  // Collapse the long create form by default on phones so the staff list
+  // stays reachable; open by default on larger screens.
+  const [showCreateForm, setShowCreateForm] = useState(true);
+
+  useEffect(() => {
+    if (typeof window !== 'undefined' && window.innerWidth <= 720) {
+      setShowCreateForm(false);
+    }
+  }, []);
   const [showResetPassword, setShowResetPassword] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<ManagedStaff | null>(null);
 
@@ -222,7 +232,7 @@ export default function StaffPage() {
       return <span style={{ color: '#9CA3AF', fontSize: '12px' }}>خارج نطاق صلاحيتك</span>;
     }
     return (
-      <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+      <div className="staff-actions">
         <button
           type="button"
           className="btn btn-ghost btn-sm"
@@ -272,7 +282,7 @@ export default function StaffPage() {
     <div style={{ minHeight: '100vh', background: 'var(--bg-primary)' }}>
       <Navbar />
 
-      <main style={{ maxWidth: '1100px', margin: '0 auto', padding: '24px 20px' }}>
+      <main className="app-page-narrow">
         <div style={{ marginBottom: '22px' }}>
           <h1 style={{ fontSize: '24px', fontWeight: 800, color: '#111827', marginBottom: '4px' }}>
             إدارة حسابات الموظفين
@@ -326,10 +336,13 @@ export default function StaffPage() {
         )}
 
         {canManage && (
-          <section className="glass-card" style={{ padding: '20px', marginBottom: '22px' }}>
-            <h2 style={{ fontSize: '17px', fontWeight: 800, marginBottom: '14px' }}>
-              إنشاء حساب موظف
-            </h2>
+          <CollapsibleSection
+            title="إنشاء حساب موظف"
+            contentId="create-staff-form"
+            open={showCreateForm}
+            onOpenChange={setShowCreateForm}
+            style={{ padding: '16px 20px', marginBottom: '22px' }}
+          >
             <form
               onSubmit={handleCreate}
               style={{
@@ -432,7 +445,7 @@ export default function StaffPage() {
               كلمة المرور: 6 أحرف أو أرقام على الأقل، ويمكنك استخدام أي تركيبة تريدها. لا تُعرض
               كلمة المرور مرة أخرى بعد الحفظ.
             </p>
-          </section>
+          </CollapsibleSection>
         )}
 
         {editing && (

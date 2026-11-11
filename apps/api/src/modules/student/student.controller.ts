@@ -14,6 +14,7 @@ import { UpdateStudentDto } from './dto/update-student.dto';
 import { BatchStudentsDto } from './dto/batch-students.dto';
 import { ImportStudentsDto } from './dto/import-students.dto';
 import { ResetAbsencesDto } from './dto/reset-absences.dto';
+import { UpdateStudentCoursesDto } from './dto/update-student-courses.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { RequirePermissions } from '../../common/decorators/permissions.decorator';
 import { PERMISSIONS } from '../../common/constants/roles';
@@ -88,6 +89,25 @@ export class StudentController {
   ) {
     const token = await this.studentService.rotateQrToken(id, user);
     return { studentId: id, token: token.token, rotatedAt: token.createdAt };
+  }
+
+  @Get(':id/enrollment')
+  @RequirePermissions(PERMISSIONS.STUDENTS_VIEW)
+  async getEnrollment(
+    @Param('id') id: string,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.studentService.getStudentEnrollment(id, user);
+  }
+
+  @Put(':id/enrollment')
+  @RequirePermissions(PERMISSIONS.STUDENTS_MANAGE)
+  async updateEnrollment(
+    @Param('id') id: string,
+    @Body() body: UpdateStudentCoursesDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.studentService.updateStudentEnrollment(id, body, user);
   }
 
   /** Validate an Excel import without writing anything. */

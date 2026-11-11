@@ -157,7 +157,7 @@ export default function FollowupPage() {
     <div style={{ minHeight: '100vh' }}>
       <Navbar />
 
-      <div style={{ maxWidth: '1200px', margin: '0 auto', padding: '24px 20px 48px' }}>
+      <div className="app-page">
         <div style={{ marginBottom: '20px' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '6px' }}>
             <div
@@ -497,10 +497,26 @@ export default function FollowupPage() {
           .followup-filters {
             grid-template-columns: repeat(2, minmax(0, 1fr));
           }
+          .followup-search {
+            grid-column: span 2;
+          }
+          .followup-stats {
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+          }
         }
         @media (max-width: 560px) {
+          /* Keep the filters in a compact 2-column grid instead of a long
+             single-column stack; the search box takes a full row. */
           .followup-filters {
-            grid-template-columns: minmax(0, 1fr);
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 10px;
+          }
+          .followup-search {
+            grid-column: span 2;
+          }
+          .followup-stats {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 10px;
           }
           .followup-student-row {
             align-items: flex-start;

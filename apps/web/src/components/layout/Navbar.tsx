@@ -31,12 +31,20 @@ export default function Navbar() {
   if (can(PERMISSIONS.STUDENTS_VIEW)) {
     links.push({ href: '/students', label: 'الطلاب' });
   }
+  // صفحة "المراحل والمواد" تظهر فقط للمسؤولين (رئيس القسم والمسجل)
+  // ويُحجب هذا الرابط عن التدريسيين لأن كل ما يحتاجه التدريسي موجود في "التقارير" وجدول المحاضرات
   if (
-    can(PERMISSIONS.SECTIONS_VIEW) ||
-    can(PERMISSIONS.COURSES_VIEW) ||
-    can(PERMISSIONS.ASSIGNMENTS_VIEW)
+    user?.role === 'HEAD_OF_DEPARTMENT' ||
+    user?.role === 'REGISTRAR' ||
+    user?.role === 'SYSTEM_OWNER'
   ) {
-    links.push({ href: '/academics', label: 'المراحل والمواد' });
+    if (
+      can(PERMISSIONS.SECTIONS_VIEW) ||
+      can(PERMISSIONS.COURSES_VIEW) ||
+      can(PERMISSIONS.ASSIGNMENTS_VIEW)
+    ) {
+      links.push({ href: '/academics', label: 'المراحل والمواد' });
+    }
   }
   if (can(PERMISSIONS.MANAGE_STAFF)) {
     links.push({ href: '/staff', label: 'الموظفون' });

@@ -1714,6 +1714,70 @@ describe('phase 2 review regressions', () => {
     assert.equal(stored?.absentCount, 0);
     assert.equal(stored?.totalSessions, 1);
 
+    // ISS-02 Regression check: resetAbsences must never delete records from an OPEN lecture
+    // We create a dedicated section and student so we don't interfere with the next test's fixture
+    const issSection = await prisma.section.create({
+      data: {
+        name: `شعبة فحص التصفير-${Date.now()}`,
+        stage: 2,
+        studyPeriod: 'MORNING',
+      },
+    });
+    const issStudent = await prisma.student.create({
+      data: {
+        studentCode: `S2-ISS02-${Date.now()}`,
+        name: 'طالب فحص الحماية من التصفير',
+        stage: 2,
+        studyPeriod: 'MORNING',
+        section: issSection.name,
+        sectionId: issSection.id,
+      },
+    });
+    const activeLecture = await prisma.lecture.create({
+      data: {
+        name: 'محاضرة نشطة لفحص الحماية من التصفير',
+        studyPeriod: 'MORNING',
+        section: issSection.name,
+        sectionId: issSection.id,
+        courseId: ids.courseC1,
+        status: 'OPEN',
+        qrToken: `reg-active-${Date.now()}`,
+        qrExpiresAt: new Date(Date.now() + 3600_000),
+        createdByUserId: userIds.lecturerA,
+        conductedByUserId: userIds.lecturerA,
+      },
+    });
+    await prisma.attendanceRecord.create({
+      data: {
+        lectureId: activeLecture.id,
+        studentId: issStudent.id,
+        studentCode: issStudent.studentCode,
+        studentName: issStudent.name,
+        status: 'ABSENT',
+      },
+    });
+    // Trigger reset on issSection
+    const resetWhileActive = await api('/api/students/reset-absences', {
+      method: 'POST',
+      token: tokens.head!,
+      body: {
+        stage: 2,
+        sectionId: issSection.id,
+        resetType: 'ALL_ATTENDANCE',
+      },
+    });
+    assert.equal(resetWhileActive.status, 201);
+    const activeRecordRemaining = await prisma.attendanceRecord.findFirst({
+      where: {
+        lectureId: activeLecture.id,
+        studentId: issStudent.id,
+      },
+    });
+    assert.ok(
+      activeRecordRemaining,
+      'attendance records belonging to an OPEN lecture must never be deleted by resetAbsences',
+    );
+
     reg.statsSectionId = section.id;
     reg.statsStudentId = second.id;
   });
@@ -2592,5 +2656,152 @@ describe('registration privacy and current-section reports', () => {
       currentSection!.name,
       'reports must show the student’s current section',
     );
+  });
+
+  describe('repeating and carry-over students custom course enrollment', () => {
+    it('sets custom course enrollment for a repeating student and protects them from absence in other courses', async () => {
+      // 1. Get current enrollment for studentA (Stage 2)
+      const res1 = await api(`/api/students/${ids.studentA}/enrollment`, {
+        token: tokens.registrar!,
+      });
+      assert.equal(res1.status, 200, JSON.stringify(res1.body));
+      assert.equal(res1.body.academicStatus, 'REGULAR');
+      assert.equal(res1.body.isCustom, false);
+
+      // 2. Set studentA as REPEAT with only courseC1 (failed C1, passed C2)
+      const res2 = await api(`/api/students/${ids.studentA}/enrollment`, {
+        method: 'PUT',
+        token: tokens.registrar!,
+        body: {
+          academicStatus: 'REPEAT',
+          courseIds: [ids.courseC1],
+          notes: 'راسب بمادة واحدة فقط',
+        },
+      });
+      assert.equal(res2.status, 200, JSON.stringify(res2.body));
+      assert.equal(res2.body.academicStatus, 'REPEAT');
+      assert.equal(res2.body.isCustom, true);
+      assert.deepEqual(res2.body.courseIds, [ids.courseC1]);
+
+      // 3. Open a lecture for courseC2 (which studentA already passed, taught by lecturerB)
+      const lecRes = await api('/api/lectures', {
+        method: 'POST',
+        token: tokens.lecturerB!,
+        body: {
+          name: 'محاضرة مادة لم يرسب فيها الطالب',
+          studyPeriod: 'MORNING',
+          sectionId: ids.sectionS2A,
+          courseId: ids.courseC2,
+        },
+      });
+      assert.equal(lecRes.status, 201, JSON.stringify(lecRes.body));
+      const lectureId = lecRes.body.id;
+
+      // Try scanning studentA into courseC2: should be rejected because student is not enrolled
+      const qrRes = await api(`/api/students/${ids.studentA}/qr`, {
+        token: tokens.registrar!,
+      });
+      const scanRes = await api(`/api/attendance/${lectureId}/scan-student`, {
+        method: 'POST',
+        token: tokens.lecturerB!,
+        body: {
+          studentCode: qrRes.body.token,
+        },
+      });
+      assert.equal(scanRes.status, 400, 'Student not enrolled in this course must be rejected');
+      assert.match(scanRes.body.message, /غير مسجل في هذه المادة/);
+
+      // 4. Close lecture courseC2: studentA must NOT be marked absent!
+      const closeRes = await api(`/api/lectures/${lectureId}/close`, {
+        method: 'PATCH',
+        token: tokens.lecturerB!,
+      });
+      assert.equal(closeRes.status, 200, JSON.stringify(closeRes.body));
+
+      const reportRes = await api(`/api/lectures/${lectureId}`, {
+        token: tokens.head!,
+      });
+      const studentARecord = reportRes.body.attendances.find(
+        (a: any) => a.studentId === ids.studentA,
+      );
+      assert.equal(
+        studentARecord,
+        undefined,
+        'Repeating student must not be recorded as absent for courses they passed',
+      );
+    });
+
+    it('allows carry-over student to scan into a lower-stage course lecture and notes their carry-over status', async () => {
+      // Create a Stage 1 course and assign lecturerA to it
+      const courseStage1 = await prisma.course.create({
+        data: { code: 'CS101', name: 'مقدمة حاسوب', stage: 1 },
+      });
+      await prisma.teachingAssignment.create({
+        data: { staffUserId: userIds.lecturerA!, courseId: courseStage1.id },
+      });
+
+      // Set studentA (Stage 2) as CARRY_OVER with the Stage 1 course
+      const res = await api(`/api/students/${ids.studentA}/enrollment`, {
+        method: 'PUT',
+        token: tokens.registrar!,
+        body: {
+          academicStatus: 'CARRY_OVER',
+          courseIds: [ids.courseC1, courseStage1.id],
+          notes: 'عبور مادة مرحلة اولى',
+        },
+      });
+      assert.equal(res.status, 200, JSON.stringify(res.body));
+
+      // Open a Stage 1 lecture for courseStage1
+      const lecRes = await api('/api/lectures', {
+        method: 'POST',
+        token: tokens.lecturerA!,
+        body: {
+          name: 'محاضرة مرحلة اولى يحضرها طالب عبور',
+          studyPeriod: 'MORNING',
+          sectionId: ids.sectionS1A,
+          courseId: courseStage1.id,
+        },
+      });
+      assert.equal(lecRes.status, 201, JSON.stringify(lecRes.body));
+      const lectureId = lecRes.body.id;
+
+      // Get studentA's QR token
+      const qrRes = await api(`/api/students/${ids.studentA}/qr`, {
+        token: tokens.registrar!,
+      });
+
+      // Scan studentA into Stage 1 lecture: MUST SUCCEED
+      const scanRes = await api(`/api/attendance/${lectureId}/scan-student`, {
+        method: 'POST',
+        token: tokens.lecturerA!,
+        body: {
+          studentCode: qrRes.body.token,
+        },
+      });
+      assert.equal(scanRes.status, 201, JSON.stringify(scanRes.body));
+      assert.match(scanRes.body.record?.note || scanRes.body.note || '', /طالب عبور/);
+
+      // Close lecture
+      const closeRes = await api(`/api/lectures/${lectureId}/close`, {
+        method: 'PATCH',
+        token: tokens.lecturerA!,
+      });
+      assert.equal(closeRes.status, 200, JSON.stringify(closeRes.body));
+    });
+
+    it('resets student enrollment back to regular when academicStatus is REGULAR', async () => {
+      const resetRes = await api(`/api/students/${ids.studentA}/enrollment`, {
+        method: 'PUT',
+        token: tokens.registrar!,
+        body: {
+          academicStatus: 'REGULAR',
+          courseIds: [],
+        },
+      });
+      assert.equal(resetRes.status, 200, JSON.stringify(resetRes.body));
+      assert.equal(resetRes.body.academicStatus, 'REGULAR');
+      assert.equal(resetRes.body.isCustom, false);
+    });
   });
 });

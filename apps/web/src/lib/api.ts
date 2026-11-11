@@ -344,6 +344,25 @@ export interface StudentHistoryItem {
   registeredAt: string;
 }
 
+export type AcademicStatus = 'REGULAR' | 'REPEAT' | 'CARRY_OVER';
+
+export interface StudentEnrollment {
+  studentId: string;
+  studentName: string;
+  studentCode: string;
+  stage: number;
+  studyPeriod: string;
+  section?: string | null;
+  sectionLabel?: string | null;
+  isCustom: boolean;
+  academicStatus: AcademicStatus;
+  courseIds: string[];
+  courses: CourseItem[];
+  notes?: string | null;
+  updatedAt?: string | null;
+  allCourses?: CourseItem[];
+}
+
 /** Full student row returned by GET /students (Head of Department / Registrar). */
 export interface StudentListItem {
   id: string;
@@ -358,6 +377,10 @@ export interface StudentListItem {
   presentCount: number;
   absentCount: number;
   totalLectures: number;
+  academicStatus?: AcademicStatus;
+  customCourseCount?: number | null;
+  isCustomEnrollment?: boolean;
+  enrollmentNotes?: string | null;
   createdAt: string;
   history: StudentHistoryItem[];
 }
@@ -543,6 +566,22 @@ export const studentApi = {
       method: 'POST',
       body: JSON.stringify(data),
     }),
+
+  getEnrollment: (studentId: string) =>
+    apiFetch<StudentEnrollment>(`/students/${encodeURIComponent(studentId)}/enrollment`),
+
+  updateEnrollment: (
+    studentId: string,
+    data: {
+      academicStatus: AcademicStatus;
+      courseIds: string[];
+      notes?: string;
+    },
+  ) =>
+    apiFetch<StudentEnrollment>(`/students/${encodeURIComponent(studentId)}/enrollment`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
 };
 
 // ============ Sections ============
@@ -600,6 +639,8 @@ export interface CourseItem {
   name: string;
   stage: number;
   description?: string | null;
+  type?: string | null;
+  typeLabel?: string | null;
   createdAt?: string;
   updatedAt?: string;
   _count?: { lectures: number; assignments: number };
@@ -610,6 +651,8 @@ export interface CourseInput {
   name: string;
   stage: number;
   description?: string;
+  type?: string;
+  hall?: string;
 }
 
 export const courseApi = {
@@ -689,6 +732,9 @@ export interface TimetableItem {
   dayLabel?: string;
   startTime: string;
   endTime: string;
+  type?: string | null;
+  typeLabel?: string | null;
+  hall?: string | null;
   createdAt?: string;
   updatedAt?: string;
   course: { id: string; code: string; name: string; stage: number };
@@ -701,6 +747,8 @@ export interface TimetableInput {
   dayOfWeek: number;
   startTime: string;
   endTime: string;
+  type?: string;
+  hall?: string;
 }
 
 export const timetableApi = {
@@ -880,3 +928,305 @@ export const followupApi = {
     ),
 };
 
+
+// ============ Phase 4: Advanced reports & statistics ============
+export interface ReportOptions {
+  stages: Array<{ value: number; label: string }>;
+  sections: Array<{ id: string; name: string; stage: number; studyPeriod: string; label?: string | null }>;
+  courses: Array<{ id: string; code: string; name: string; stage: number }>;
+  lecturers: Array<{ id: string; fullName: string; staffId: string; role: string }>;
+}
+
+export interface ReportFilters {
+  from?: string;
+  to?: string;
+  stage?: string;
+  sectionId?: string;
+  courseId?: string;
+  lecturerId?: string;
+  status?: string;
+  search?: string;
+  sort?: string;
+  page?: number | string;
+  pageSize?: number | string;
+  threshold?: number | string;
+}
+
+export interface SummaryCounts {
+  present: number;
+  absent: number;
+  totalCases: number;
+  attendanceRate: number | null;
+  absenceRate: number | null;
+}
+
+export interface DashboardTotals extends SummaryCounts {
+  students: number;
+  teachers: number;
+  sections: number;
+  courses: number;
+  lectures: number;
+  closedLectures: number;
+  openLectures: number;
+  attendanceRecords: number;
+  activePresent: number;
+}
+
+export interface DashboardCourseComparison extends SummaryCounts {
+  course: { id: string; code: string; name: string; stage: number } | null;
+  lectures: number;
+}
+
+export interface DashboardSectionComparison extends SummaryCounts {
+  section: { id: string; name: string; stage: number; studyPeriod: string };
+  lectures: number;
+}
+
+export interface StageComparisonItem extends SummaryCounts {
+  stage: number;
+  label: string;
+  students: number;
+  sections: number;
+  courses: number;
+  closedLectures: number;
+}
+
+export interface TrendPoint {
+  key: string;
+  present: number;
+  absent: number;
+  lectures: number;
+}
+
+export interface ReportsDashboard {
+  scope: {
+    isAdmin: boolean;
+    stages: number[];
+    courseIds: string[];
+    appliedFilters: ReportFilters & { stage?: string | null };
+  };
+  totals: DashboardTotals;
+  trendDaily: TrendPoint[];
+  trendWeekly: TrendPoint[];
+  trendMonthly: TrendPoint[];
+  courseComparison: DashboardCourseComparison[];
+  sectionComparison: DashboardSectionComparison[];
+  stages: StageComparisonItem[];
+}
+
+export interface ReportStudentItem extends SummaryCounts {
+  id: string;
+  studentCode: string;
+  name: string;
+  stage: number;
+  stageLabel: string;
+  studyPeriod: string;
+  section: string | null;
+  sectionId: string | null;
+  sectionLabel: string | null;
+  orderIndex?: number | null;
+}
+
+export interface ReportStudentsPage {
+  items: ReportStudentItem[];
+  pagination: { page: number; pageSize: number; total: number; totalPages: number };
+  totals: SummaryCounts & { students: number };
+  lecturesInScope: number;
+}
+
+export interface ReportStudentLecture {
+  lectureId: string;
+  lectureName: string;
+  lectureDate: string;
+  closedAt: string | null;
+  courseId: string | null;
+  courseCode: string | null;
+  courseName: string | null;
+  stage: number | null;
+  sections: string[];
+  conductedBy: string | null;
+  createdBy: string | null;
+  studyPeriod: string;
+  status: 'PRESENT' | 'ABSENT' | null;
+  note: string | null;
+  registeredAt: string | null;
+}
+
+export interface ReportStudentDetail {
+  student: {
+    id: string;
+    studentCode: string;
+    name: string;
+    stage: number;
+    stageLabel: string;
+    studyPeriod: string;
+    section: string | null;
+    sectionLabel: string | null;
+  };
+  stats: SummaryCounts;
+  lectures: ReportStudentLecture[];
+  totalLectures: number;
+}
+
+export interface ReportCourseItem extends SummaryCounts {
+  id: string;
+  code: string;
+  name: string;
+  stage: number;
+  closedLectures: number;
+}
+
+export interface ReportCoursesResponse {
+  items: ReportCourseItem[];
+  totals: SummaryCounts & { courses: number; closedLectures: number };
+}
+
+export interface ReportCourseStudent extends SummaryCounts {
+  id: string;
+  studentCode: string;
+  name: string;
+  stage: number;
+  studyPeriod: string;
+  section: string | null;
+  sectionLabel: string | null;
+}
+
+export interface ReportCourseStudentsResponse {
+  course: { id: string; code: string; name: string; stage: number; stageLabel: string };
+  lecturesInScope: number;
+  items: ReportCourseStudent[];
+  totals: SummaryCounts & { students: number };
+}
+
+export interface ReportLecturerItem extends SummaryCounts {
+  id: string;
+  fullName: string;
+  staffId: string;
+  role: string;
+  assignments: Array<{ id: string; code: string; name: string; stage: number }>;
+  conductedLectures: number;
+}
+
+export interface ReportLecturersResponse {
+  items: ReportLecturerItem[];
+  totals: SummaryCounts & { lecturers: number; conductedLectures: number };
+}
+
+export interface ReportLecturerDetail {
+  lecturer: { id: string; fullName: string; staffId: string; role: string; isActive: boolean };
+  assignments: Array<{ id: string; code: string; name: string; stage: number }>;
+  lectures: Array<{
+    id: string;
+    name: string;
+    lectureDate: string;
+    courseCode: string | null;
+    courseName: string | null;
+    stage: number | null;
+    sections: string[];
+    studyPeriod: string;
+  } & SummaryCounts>;
+  totals: SummaryCounts & { conductedLectures: number; studentsPresent: number; studentsAbsent: number };
+}
+
+export interface ReportSectionItem extends SummaryCounts {
+  id: string;
+  name: string;
+  label: string | null;
+  stage: number;
+  stageLabel: string;
+  studyPeriod: string;
+  students: number;
+  closedLectures: number;
+}
+
+export interface ReportSectionsResponse {
+  items: ReportSectionItem[];
+  totals: SummaryCounts & { sections: number; students: number; closedLectures: number };
+}
+
+export interface ReportStagesResponse {
+  items: StageComparisonItem[];
+}
+
+export interface ReportAbsenteeItem extends SummaryCounts {
+  id: string;
+  studentCode: string;
+  name: string;
+  stage: number;
+  stageLabel: string;
+  studyPeriod: string;
+  section: string | null;
+  sectionLabel: string | null;
+  absentCount: number;
+  presentCount: number;
+  status: 'EXCEEDED' | 'WARNING' | null;
+}
+
+export interface ReportAbsenteesResponse {
+  threshold: number;
+  thresholdSource: 'param' | 'setting' | 'default';
+  exceeded: number;
+  warning: number;
+  items: ReportAbsenteeItem[];
+  pagination: { page: number; pageSize: number; total: number; totalPages: number };
+}
+
+export type ReportQuery = Record<string, string | number | undefined>;
+
+const reportQuery = (filters: ReportFilters = {}): string => {
+  const params = reportQueryParams(filters);
+  const q = params.toString();
+  return q ? `?${q}` : '';
+};
+
+const reportQueryParams = (filters: ReportFilters = {}) => {
+  const params = new URLSearchParams();
+  const set = (key: string, value: unknown) => {
+    if (value === undefined || value === null) return;
+    const v = String(value).trim();
+    if (v !== '') params.append(key, v);
+  };
+  set('from', filters.from);
+  set('to', filters.to);
+  set('stage', filters.stage);
+  set('sectionId', filters.sectionId);
+  set('courseId', filters.courseId);
+  set('lecturerId', filters.lecturerId);
+  set('status', filters.status);
+  set('search', filters.search);
+  set('sort', filters.sort);
+  set('page', filters.page);
+  set('pageSize', filters.pageSize);
+  set('threshold', filters.threshold);
+  return params;
+};
+
+export const reportsApi = {
+  options: () => apiFetch<ReportOptions>('/reports/options'),
+  dashboard: (filters: ReportFilters = {}) =>
+    apiFetch<ReportsDashboard>(`/reports/dashboard${reportQuery(filters)}`),
+  students: (filters: ReportFilters = {}) =>
+    apiFetch<ReportStudentsPage>(`/reports/students${reportQuery(filters)}`),
+  studentDetail: (studentId: string, filters: ReportFilters = {}) =>
+    apiFetch<ReportStudentDetail>(
+      `/reports/students/${encodeURIComponent(studentId)}${reportQuery(filters)}`,
+    ),
+  courses: (filters: ReportFilters = {}) =>
+    apiFetch<ReportCoursesResponse>(`/reports/courses${reportQuery(filters)}`),
+  courseStudents: (courseId: string, filters: ReportFilters = {}) =>
+    apiFetch<ReportCourseStudentsResponse>(
+      `/reports/courses/${encodeURIComponent(courseId)}/students${reportQuery(filters)}`,
+    ),
+  lecturers: (filters: ReportFilters = {}) =>
+    apiFetch<ReportLecturersResponse>(`/reports/lecturers${reportQuery(filters)}`),
+  lecturerDetail: (lecturerId: string, filters: ReportFilters = {}) =>
+    apiFetch<ReportLecturerDetail>(
+      `/reports/lecturers/${encodeURIComponent(lecturerId)}${reportQuery(filters)}`,
+    ),
+  sections: (filters: ReportFilters = {}) =>
+    apiFetch<ReportSectionsResponse>(`/reports/sections${reportQuery(filters)}`),
+  stages: (filters: ReportFilters = {}) =>
+    apiFetch<ReportStagesResponse>(`/reports/stages${reportQuery(filters)}`),
+  absentees: (filters: ReportFilters = {}) =>
+    apiFetch<ReportAbsenteesResponse>(`/reports/absentees${reportQuery(filters)}`),
+};

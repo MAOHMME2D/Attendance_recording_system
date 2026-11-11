@@ -59,6 +59,7 @@ export class CourseService {
         name,
         stage,
         description: dto.description?.trim() || null,
+        type: dto.type?.trim() || 'THEORETICAL',
       },
     });
 
@@ -91,6 +92,9 @@ export class CourseService {
     if (dto.stage !== undefined) data.stage = normalizeStage(dto.stage);
     if (dto.description !== undefined) {
       data.description = dto.description?.trim() || null;
+    }
+    if (dto.type !== undefined) {
+      data.type = dto.type?.trim() || 'THEORETICAL';
     }
 
     const nextCode = (data.code as string | undefined) ?? course.code;

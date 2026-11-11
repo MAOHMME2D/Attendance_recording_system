@@ -118,6 +118,7 @@ model Course {
   name        String
   stage       Int
   description String?
+  type        String?  @default("THEORETICAL")
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
@@ -249,6 +250,8 @@ model TimetableEntry {
   dayOfWeek  Int
   startTime  String
   endTime    String
+  hall       String?
+  type       String?  @default("THEORETICAL")
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 

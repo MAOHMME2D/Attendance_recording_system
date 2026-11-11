@@ -476,10 +476,10 @@ function HomeContent() {
       {/* Unified Header / Navbar Component */}
       <Navbar />
 
-      <div style={{ maxWidth: '1200px', margin: '0 auto', padding: '24px 20px' }}>
+      <div className="app-page">
         {/* If no active lecture, show create form */}
         {!lecture && (
-          <div className="animate-fade-in" style={{ maxWidth: '640px', margin: '50px auto', textAlign: 'center' }}>
+          <div className="animate-fade-in" style={{ maxWidth: '640px', margin: '20px auto', textAlign: 'center' }}>
             <div
               style={{
                 width: '68px',
@@ -1082,7 +1082,8 @@ function HomeContent() {
                     </p>
                   </div>
                 ) : (
-                  <div style={{ maxHeight: '420px', overflowY: 'auto' }}>
+                  <>
+                  <div className="attendance-table-wrap">
                     <table className="attendance-table" style={{ fontSize: '13px' }}>
                       <thead>
                         <tr>
@@ -1148,6 +1149,57 @@ function HomeContent() {
                       </tbody>
                     </table>
                   </div>
+
+                  {/* Mobile: one compact card per student */}
+                  <div className="attendance-mobile-list">
+                    {attendances.map((record) => (
+                      <div key={record.id} className="attendance-mobile-item">
+                        <div style={{ minWidth: 0, flex: 1 }}>
+                          <div style={{ fontWeight: '700', color: '#111827', fontSize: '14px', lineHeight: 1.5 }}>
+                            {record.studentName}
+                            {record.note && (
+                              <span style={{ display: 'block', fontSize: '10.5px', fontWeight: '600', color: '#6D28D9' }}>
+                                {record.note}
+                              </span>
+                            )}
+                          </div>
+                          <div style={{ display: 'flex', gap: '10px', alignItems: 'center', marginTop: '2px', flexWrap: 'wrap' }}>
+                            <span style={{ fontFamily: 'monospace', fontSize: '11px', color: '#6B7280' }}>
+                              {record.studentCode || '-'}
+                            </span>
+                            <span dir="ltr" style={{ fontSize: '11px', color: '#6B7280' }}>
+                              {formatAttendanceTime(record.registeredAt)}
+                            </span>
+                          </div>
+                        </div>
+                        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px', flexShrink: 0 }}>
+                          <span
+                            style={{
+                              padding: '3px 12px',
+                              borderRadius: '999px',
+                              fontSize: '11.5px',
+                              fontWeight: '800',
+                              background: record.status === 'PRESENT' ? '#ECFDF5' : '#FEF2F2',
+                              color: record.status === 'PRESENT' ? '#065F46' : '#991B1B',
+                              border: record.status === 'PRESENT' ? '1px solid #A7F3D0' : '1px solid #FECACA',
+                            }}
+                          >
+                            {record.status === 'PRESENT' ? 'حاضر' : 'غائب'}
+                          </span>
+                          {canManualAttendance && lecture.status === 'ACTIVE' && (
+                            <button
+                              className="btn btn-ghost btn-sm"
+                              onClick={() => handleToggle(record.id)}
+                              style={{ padding: '4px 14px', fontSize: '11px', minHeight: '34px' }}
+                            >
+                              تبديل
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  </>
                 )}
               </div>
             </div>
@@ -1345,7 +1397,7 @@ function HomeContent() {
               </div>
 
               {/* Student List in Table */}
-              <div style={{ maxHeight: '280px', overflowY: 'auto', border: '1px solid #E5E7EB', borderRadius: '10px', marginBottom: '20px' }}>
+              <div className="attendance-scroll" style={{ maxHeight: '280px', border: '1px solid #E5E7EB', borderRadius: '10px', marginBottom: '20px' }}>
                 {summaryTab === 'absent' ? (
                   closedSummary.absentStudents?.length === 0 ? (
                     <div style={{ padding: '24px', textAlign: 'center', color: '#059669', fontWeight: '700', fontSize: '14px' }}>
@@ -1427,19 +1479,10 @@ function HomeContent() {
               {/* Modal Actions */}
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px' }}>
                 <button
-                  className="btn btn-primary"
+                  className="btn btn-success btn-sm"
                   onClick={() => setShowSummaryPdfModal(true)}
                   id="export-summary-pdf-btn"
-                  style={{
-                    fontSize: '13px',
-                    fontWeight: '700',
-                    backgroundColor: '#DC2626',
-                    borderColor: '#DC2626',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '6px',
-                    boxShadow: '0 2px 6px rgba(220, 38, 38, 0.25)',
-                  }}
+                  title="تصدير كشف الحضور والغياب بصيغة PDF الرسمية"
                 >
                   📄 تصدير كشف الحضور والغياب (PDF)
                 </button>

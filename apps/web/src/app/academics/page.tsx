@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as XLSX from 'xlsx';
 import Navbar from '../../components/layout/Navbar';
 import {
@@ -24,6 +24,7 @@ import {
   type TimetableItem,
 } from '../../lib/api';
 import { useAuth, PERMISSIONS, ROLE_LABELS } from '../../lib/auth';
+import CollapsibleSection from '../../components/ui/CollapsibleSection';
 
 type Tab = 'sections' | 'courses' | 'assignments' | 'timetable';
 
@@ -31,6 +32,110 @@ const PERIOD_LABELS: Record<string, string> = {
   MORNING: 'صباحي',
   EVENING: 'مسائي',
 };
+
+// ---------- Timetable Excel import helpers ----------
+const ARABIC_DIGITS = '٠١٢٣٤٥٦٧٨٩';
+const PERSIAN_DIGITS = '۰۱۲۳۴۵۶۷۸۹';
+
+function normalizeDigits(value: string): string {
+  return value
+    .split('')
+    .map((ch) => {
+      const ar = ARABIC_DIGITS.indexOf(ch);
+      if (ar >= 0) return String(ar);
+      const fa = PERSIAN_DIGITS.indexOf(ch);
+      if (fa >= 0) return String(fa);
+      return ch;
+    })
+    .join('');
+}
+
+function normalizeKey(value: unknown): string {
+  return normalizeDigits(String(value ?? '')).trim().toUpperCase();
+}
+
+function parseTimeValue(raw: unknown): string | null {
+  if (raw == null) return null;
+  if (typeof raw === 'number') {
+    // Excel time cells may arrive as a fraction of a day.
+    if (raw >= 0 && raw < 1) {
+      const totalMinutes = Math.round(raw * 24 * 60);
+      const hour = Math.floor(totalMinutes / 60) % 24;
+      const minute = totalMinutes % 60;
+      return `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+    }
+    return null;
+  }
+  const text = normalizeDigits(String(raw)).trim();
+  if (!text) return null;
+  let meridiem: 'AM' | 'PM' | null = null;
+  if (/(ص|صباح)/.test(text)) meridiem = 'AM';
+  else if (/(م|مساء)/.test(text)) meridiem = 'PM';
+  else if (/am/i.test(text)) meridiem = 'AM';
+  else if (/pm/i.test(text)) meridiem = 'PM';
+  const match = text.match(/(\d{1,2})\s*[:.٫]\s*(\d{2})/);
+  if (!match) return null;
+  let hour = Number(match[1]);
+  const minute = Number(match[2]);
+  if (minute > 59) return null;
+  if (meridiem === 'PM' && hour < 12) hour += 12;
+  if (meridiem === 'AM' && hour === 12) hour = 0;
+  if (hour > 23) return null;
+  return `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+}
+
+function parseDayValue(raw: unknown): number | null {
+  if (raw == null) return null;
+  if (typeof raw === 'number' && Number.isFinite(raw) && raw >= 0 && raw <= 6) {
+    return Math.trunc(raw);
+  }
+  const text = normalizeDigits(String(raw)).trim();
+  if (/^\d+$/.test(text)) {
+    const numeric = Number(text);
+    if (numeric >= 0 && numeric <= 6) return numeric;
+    return null;
+  }
+  const exact = TIMETABLE_DAYS.find((day) => day.label === text);
+  if (exact) return exact.value;
+  const fuzzy = TIMETABLE_DAYS.find((day) => text.includes(day.label));
+  return fuzzy ? fuzzy.value : null;
+}
+
+function parseStageValue(raw: unknown): number | null {
+  if (raw == null) return null;
+  if (typeof raw === 'number' && Number.isFinite(raw) && raw >= 1 && raw <= 4) {
+    return Math.trunc(raw);
+  }
+  const text = normalizeDigits(String(raw));
+  const digit = text.match(/[1-4]/);
+  if (digit) return Number(digit[0]);
+  if (/أولى|اولى/.test(text)) return 1;
+  if (/ثانية/.test(text)) return 2;
+  if (/ثالثة/.test(text)) return 3;
+  if (/رابعة/.test(text)) return 4;
+  return null;
+}
+
+type TimetableImportRowStatus = 'ok' | 'exists' | 'error';
+
+interface TimetableImportRow {
+  index: number;
+  courseCode: string;
+  courseName: string;
+  sectionLabel: string;
+  periodLabel: string;
+  dayLabel: string;
+  type?: string;
+  typeLabel?: string;
+  startTime: string;
+  endTime: string;
+  hall?: string;
+  status: TimetableImportRowStatus;
+  message: string;
+  courseId?: string;
+  sectionId?: string;
+  dayOfWeek?: number;
+}
 
 function errorMessage(error: unknown): string {
   if (error instanceof Error && error.message) return error.message;
@@ -76,13 +181,35 @@ export default function AcademicsPage() {
     dayOfWeek: 0,
     startTime: '08:00',
     endTime: '09:30',
+    type: 'THEORETICAL',
+    hall: '',
   });
   const [timetableFilter, setTimetableFilter] = useState<{
     courseId: string;
     sectionId: string;
     dayOfWeek: string;
-  }>({ courseId: '', sectionId: '', dayOfWeek: '' });
+    type: string;
+  }>({ courseId: '', sectionId: '', dayOfWeek: '', type: '' });
   const [editTimetableId, setEditTimetableId] = useState<string | null>(null);
+  const [timetableFormOpen, setTimetableFormOpen] = useState(true);
+
+  // Open the (possibly collapsed) form automatically when the user starts editing a row.
+  useEffect(() => {
+    if (editTimetableId) setTimetableFormOpen(true);
+  }, [editTimetableId]);
+
+  // Collapse the long form by default on phones (same behavior as the other add sections).
+  useEffect(() => {
+    if (typeof window !== 'undefined' && window.innerWidth <= 720) {
+      setTimetableFormOpen(false);
+    }
+  }, []);
+
+  const timetableFileRef = useRef<HTMLInputElement>(null);
+  const [timetableImportOpen, setTimetableImportOpen] = useState(false);
+  const [timetableImportRows, setTimetableImportRows] = useState<TimetableImportRow[] | null>(null);
+  const [timetableImportError, setTimetableImportError] = useState<string | null>(null);
+  const [timetableImportLoading, setTimetableImportLoading] = useState(false);
 
   // Section form
   const [sectionForm, setSectionForm] = useState({
@@ -103,12 +230,14 @@ export default function AcademicsPage() {
     name: '',
     stage: 2,
     description: '',
+    type: 'THEORETICAL',
   });
   const [editCourse, setEditCourse] = useState<{
     id: string;
     code: string;
     name: string;
     description: string;
+    type: string;
   } | null>(null);
 
   // Assignment form
@@ -166,7 +295,7 @@ export default function AcademicsPage() {
     setLoading(true);
     setError(null);
     try {
-      const [entries, courseData, sectionData] = await Promise.all([
+      const [rawEntries, courseData, sectionData] = await Promise.all([
         timetableApi.getAll({
           courseId: timetableFilter.courseId || undefined,
           sectionId: timetableFilter.sectionId || undefined,
@@ -175,7 +304,10 @@ export default function AcademicsPage() {
         courseApi.getAll(),
         sectionApi.getAll(),
       ]);
-      setTimetableEntries(entries);
+      const filteredEntries = timetableFilter.type
+        ? rawEntries.filter((e) => (e.type || 'THEORETICAL') === timetableFilter.type)
+        : rawEntries;
+      setTimetableEntries(filteredEntries);
       setCourses(courseData);
       setSections(sectionData);
     } catch (err) {
@@ -267,8 +399,9 @@ export default function AcademicsPage() {
         name: courseForm.name.trim(),
         stage: courseForm.stage,
         description: courseForm.description.trim() || undefined,
+        type: courseForm.type || 'THEORETICAL',
       });
-      setCourseForm((form) => ({ ...form, code: '', name: '', description: '' }));
+      setCourseForm((form) => ({ ...form, code: '', name: '', description: '', type: 'THEORETICAL' }));
       await loadCourses();
     }, 'تمت إضافة المادة بنجاح');
   };
@@ -281,6 +414,7 @@ export default function AcademicsPage() {
         code: editCourse.code.trim(),
         name: editCourse.name.trim(),
         description: editCourse.description.trim(),
+        type: editCourse.type || 'THEORETICAL',
       });
       setEditCourse(null);
       await loadCourses();
@@ -359,6 +493,8 @@ export default function AcademicsPage() {
       dayOfWeek: entry.dayOfWeek,
       startTime: entry.startTime,
       endTime: entry.endTime,
+      type: entry.type || 'THEORETICAL',
+      hall: entry.hall || '',
     });
     setError(null);
     if (typeof window !== 'undefined') {
@@ -368,7 +504,7 @@ export default function AcademicsPage() {
 
   const cancelEditTimetable = () => {
     setEditTimetableId(null);
-    setTimetableForm((form) => ({ ...form, courseId: '', sectionId: '' }));
+    setTimetableForm((form) => ({ ...form, courseId: '', sectionId: '', type: 'THEORETICAL', hall: '' }));
   };
 
   const handleExportTimetableExcel = () => {
@@ -379,8 +515,10 @@ export default function AcademicsPage() {
     const rows = timetableEntries.map((entry, index) => ({
       'ت': index + 1,
       'المادة': `${entry.course.code} — ${entry.course.name}`,
+      'النوع': (entry.type === 'PRACTICAL' || entry.typeLabel === 'عملي') ? 'عملي' : 'نظري',
       'المرحلة': stageLabel(entry.course.stage),
       'الشعبة': entry.section.name,
+      'القاعة': entry.hall || '—',
       'الدراسة': entry.section.studyPeriod === 'EVENING' ? 'مسائية' : 'صباحية',
       'اليوم': entry.dayLabel,
       'من': entry.startTime,
@@ -390,6 +528,7 @@ export default function AcademicsPage() {
     worksheet['!cols'] = [
       { wch: 6 },
       { wch: 34 },
+      { wch: 10 },
       { wch: 12 },
       { wch: 10 },
       { wch: 10 },
@@ -403,6 +542,236 @@ export default function AcademicsPage() {
       workbook,
       `الجدول_الدراسي_${new Date().toISOString().slice(0, 10)}.xlsx`,
     );
+  };
+
+  // ---------------- Timetable Excel import ----------------
+  const buildTimetableImportRows = (grid: unknown[][]): TimetableImportRow[] => {
+    const header = (grid[0] || []).map((cell) => String(cell ?? '').trim());
+    const hasHeader = header.some((cell) => /المادة|الشعبة|اليوم|المرحلة|الدراسة/.test(cell));
+    const colIndex = (matchers: RegExp[], fallback: number): number => {
+      if (!hasHeader) return fallback;
+      const found = header.findIndex((cell) => matchers.some((re) => re.test(cell)));
+      return found >= 0 ? found : fallback;
+    };
+    const col = {
+      course: colIndex([/المادة|مادة|course/i], 1),
+      type: colIndex([/النوع|نوع|type/i], -1),
+      stage: colIndex([/المرحلة|stage/i], 2),
+      section: colIndex([/الشعبة|شعبة|section/i], 3),
+      hall: colIndex([/القاعة|قاعة|المختبر|مختبر|hall|room/i], -1),
+      period: colIndex([/الدراسة|صباحي|مسائي|period/i], 4),
+      day: colIndex([/اليوم|day/i], 5),
+      start: colIndex([/من|البداية|start/i], 6),
+      end: colIndex([/إلى|النهاية|end/i], 7),
+    };
+    const startRow = hasHeader ? 1 : 0;
+
+    const seen = new Set<string>();
+    const rows: TimetableImportRow[] = [];
+
+    for (let i = startRow; i < grid.length; i += 1) {
+      const rawRow = grid[i];
+      if (!Array.isArray(rawRow)) continue;
+      const cells = rawRow.map((cell) => (cell == null ? '' : String(cell).trim()));
+      if (cells.every((cell) => cell === '')) continue;
+
+      const courseText = col.course >= 0 ? cells[col.course] : '';
+      const typeText = col.type >= 0 ? cells[col.type] : '';
+      const stageText = col.stage >= 0 ? cells[col.stage] : '';
+      const sectionText = col.section >= 0 ? cells[col.section] : '';
+      const hallText = col.hall >= 0 ? cells[col.hall] : '';
+      const periodText = col.period >= 0 ? cells[col.period] : '';
+      const dayText = col.day >= 0 ? normalizeDigits(cells[col.day] ?? '') : '';
+
+      const dashSplit = courseText.split(/[—–-]/);
+      const courseCode = normalizeKey(dashSplit[0] || courseText);
+      const startTime = parseTimeValue(col.start >= 0 ? rawRow[col.start] : undefined);
+      const endTime = parseTimeValue(col.end >= 0 ? rawRow[col.end] : undefined);
+      const dayOfWeek = parseDayValue(col.day >= 0 ? rawRow[col.day] : undefined);
+      const wantStage = parseStageValue(stageText);
+      const wantPeriod = /مسائ/.test(normalizeDigits(periodText))
+        ? 'EVENING'
+        : /صباح/.test(normalizeDigits(periodText))
+          ? 'MORNING'
+          : null;
+      const wantType = /عملي|practical/i.test(typeText)
+        ? 'PRACTICAL'
+        : /نظري|theoretical/i.test(typeText)
+          ? 'THEORETICAL'
+          : undefined;
+
+      const course = courses.find((item) => normalizeKey(item.code) === courseCode)
+        || courses.find((item) => normalizeKey(item.name) === normalizeKey(courseText))
+        || null;
+
+      const sectionKey = normalizeKey(sectionText).replace(/^شعبة\s+/, '');
+      let candidates = sections.filter(
+        (section) =>
+          normalizeKey(section.name) === sectionKey ||
+          normalizeKey(section.label ?? '') === sectionKey,
+      );
+      if (wantPeriod) {
+        candidates = candidates.filter(
+          (section) => (section.studyPeriod || 'MORNING') === wantPeriod,
+        );
+      }
+      if (wantStage) {
+        candidates = candidates.filter((section) => Number(section.stage) === wantStage);
+      }
+      if (candidates.length > 1 && course) {
+        const byCourseStage = candidates.filter(
+          (section) => Number(section.stage) === Number(course.stage),
+        );
+        if (byCourseStage.length > 0) candidates = byCourseStage;
+      }
+      const section = candidates[0] ?? null;
+
+      const errors: string[] = [];
+      if (!course) errors.push('المادة غير موجودة (تحقق من رمز المادة)');
+      if (!section) {
+        errors.push(
+          sections.length === 0
+            ? 'لا توجد شعب محمّلة للتطابق معها'
+            : 'الشعبة غير موجودة أو غير واضحة (أضف نوع الدراسة/المرحلة أو تحقق من الاسم)',
+        );
+      } else if (candidates.length > 1) {
+        errors.push('تعذر تحديد الشعبة (هناك عدة شعب بنفس الاسم)');
+      }
+      if (dayOfWeek == null) errors.push('اليوم غير واضح (الأحد…السبت)');
+      if (!startTime) errors.push('وقت البداية غير صالح');
+      if (!endTime) errors.push('وقت النهاية غير صالح');
+      if (startTime && endTime && startTime >= endTime) {
+        errors.push('وقت النهاية يجب أن يكون بعد البداية');
+      }
+
+      const baseRow: TimetableImportRow = {
+        index: i + 1,
+        courseCode: course?.code || dashSplit[0]?.trim() || courseText || '—',
+        courseName: course?.name || (dashSplit.length > 1 ? dashSplit.slice(1).join('—').trim() : ''),
+        sectionLabel: section ? `شعبة ${section.name}` : sectionText || '—',
+        periodLabel: wantPeriod === 'EVENING' ? 'مسائية' : wantPeriod === 'MORNING' ? 'صباحية' : periodText || '—',
+        dayLabel: dayOfWeek != null ? TIMETABLE_DAYS.find((day) => day.value === dayOfWeek)?.label || String(dayOfWeek) : dayText || '—',
+        type: wantType || course?.type || 'THEORETICAL',
+        typeLabel: (wantType || course?.type) === 'PRACTICAL' ? 'عملي' : 'نظري',
+        startTime: startTime || '—',
+        endTime: endTime || '—',
+        hall: hallText || undefined,
+        status: 'error',
+        message: '',
+        courseId: course?.id,
+        sectionId: section?.id,
+        dayOfWeek: dayOfWeek ?? undefined,
+      };
+
+      if (errors.length > 0) {
+        baseRow.status = 'error';
+        baseRow.message = errors.join(' · ');
+        rows.push(baseRow);
+        continue;
+      }
+
+      const key = `${course!.id}|${section!.id}|${dayOfWeek}|${startTime}|${endTime}`;
+      if (seen.has(key)) {
+        baseRow.status = 'exists';
+        baseRow.message = 'مكرر داخل الملف — سيتم تخطيه';
+        rows.push(baseRow);
+        continue;
+      }
+      seen.add(key);
+
+      const existing = timetableEntries.find(
+        (entry) =>
+          entry.courseId === course!.id &&
+          entry.sectionId === section!.id &&
+          entry.dayOfWeek === dayOfWeek &&
+          entry.startTime === startTime &&
+          entry.endTime === endTime,
+      );
+      if (existing) {
+        baseRow.status = 'exists';
+        baseRow.message = 'موجود مسبقًا — سيتم تخطيه';
+      } else {
+        baseRow.status = 'ok';
+        baseRow.message = 'جاهز للاستيراد';
+      }
+      rows.push(baseRow);
+    }
+
+    return rows;
+  };
+
+  const handleTimetableFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    setTimetableImportError(null);
+
+    const reader = new FileReader();
+    reader.onload = (loadEvent) => {
+      try {
+        const workbook = XLSX.read(loadEvent.target?.result, { type: 'binary' });
+        const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
+        const grid = XLSX.utils.sheet_to_json<unknown[]>(firstSheet, { header: 1, defval: '' });
+        const rows = buildTimetableImportRows(grid);
+        if (rows.length === 0) {
+          setTimetableImportError('لم يتم العثور على أي صفوف صالحة في الملف');
+          setTimetableImportRows(null);
+          return;
+        }
+        setTimetableImportRows(rows);
+      } catch (err) {
+        setTimetableImportError('فشل قراءة ملف الإكسل: ' + errorMessage(err));
+        setTimetableImportRows(null);
+      }
+    };
+    reader.readAsBinaryString(file);
+  };
+
+  const resetTimetableImport = () => {
+    setTimetableImportRows(null);
+    setTimetableImportError(null);
+    if (timetableFileRef.current) timetableFileRef.current.value = '';
+  };
+
+  const closeTimetableImport = () => {
+    setTimetableImportOpen(false);
+    resetTimetableImport();
+  };
+
+  const handleConfirmTimetableImport = async () => {
+    if (!timetableImportRows) return;
+    const ready = timetableImportRows.filter((row) => row.status === 'ok');
+    if (ready.length === 0) {
+      setTimetableImportError('لا توجد صفوف جاهزة للاستيراد');
+      return;
+    }
+    setTimetableImportLoading(true);
+    setTimetableImportError(null);
+    const failures: string[] = [];
+    let created = 0;
+    for (const row of ready) {
+      try {
+        await timetableApi.create({
+          courseId: row.courseId!,
+          sectionId: row.sectionId!,
+          dayOfWeek: row.dayOfWeek!,
+          startTime: row.startTime,
+          endTime: row.endTime,
+          type: row.type || 'THEORETICAL',
+          hall: row.hall,
+        });
+        created += 1;
+      } catch (err) {
+        failures.push(`صف ${row.index}: ${errorMessage(err)}`);
+      }
+    }
+    await loadTimetable();
+    setTimetableImportLoading(false);
+    if (failures.length > 0) {
+      setTimetableImportError(`أُضيف ${created} موعد، وفشل ${failures.length}:\n${failures.join('\n')}`);
+      return;
+    }
+    flashSuccess(`تم استيراد ${created} موعد بنجاح`);
+    closeTimetableImport();
   };
 
   const handleDeleteTimetableEntry = (entry: TimetableItem) => {
@@ -456,7 +825,7 @@ export default function AcademicsPage() {
     <div style={{ minHeight: '100vh' }}>
       <Navbar />
 
-      <div style={{ maxWidth: '1200px', margin: '0 auto', padding: '24px 20px 48px' }}>
+      <div className="app-page">
         <div style={{ marginBottom: '20px' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '6px' }}>
             <div
@@ -602,14 +971,12 @@ export default function AcademicsPage() {
         ) : activeTab === 'sections' ? (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '18px' }}>
             {canManageSections && (
-              <form
-                className="glass-card"
-                onSubmit={handleCreateSection}
+              <CollapsibleSection
+                title="إضافة شعبة"
+                contentId="create-section-form"
                 style={{ padding: '18px' }}
               >
-                <h2 style={{ fontSize: '16px', fontWeight: '800', marginBottom: '12px' }}>
-                  إضافة شعبة
-                </h2>
+                <form onSubmit={handleCreateSection}>
                 <div className="academics-form-grid">
                   <div>
                     <label className="academics-label">المرحلة</label>
@@ -677,7 +1044,8 @@ export default function AcademicsPage() {
                 >
                   {actionLoading ? 'جارٍ الحفظ...' : 'إضافة الشعبة'}
                 </button>
-              </form>
+                </form>
+              </CollapsibleSection>
             )}
 
             {sections.length === 0 ? (
@@ -769,7 +1137,7 @@ export default function AcademicsPage() {
                             </span>
                           </div>
                           {canManageSections && (
-                            <div style={{ display: 'flex', gap: '8px', marginTop: '12px' }}>
+                            <div className="academics-card-actions" style={{ display: 'flex', gap: '8px', marginTop: '12px' }}>
                               <button
                                 type="button"
                                 className="btn btn-sm"
@@ -804,14 +1172,12 @@ export default function AcademicsPage() {
         ) : activeTab === 'courses' ? (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '18px' }}>
             {canManageCourses && (
-              <form
-                className="glass-card"
-                onSubmit={handleCreateCourse}
+              <CollapsibleSection
+                title="إضافة مادة"
+                contentId="create-course-form"
                 style={{ padding: '18px' }}
               >
-                <h2 style={{ fontSize: '16px', fontWeight: '800', marginBottom: '12px' }}>
-                  إضافة مادة
-                </h2>
+                <form onSubmit={handleCreateCourse}>
                 <div className="academics-form-grid">
                   <div>
                     <label className="academics-label">رمز المادة</label>
@@ -866,6 +1232,20 @@ export default function AcademicsPage() {
                       maxLength={500}
                     />
                   </div>
+                  <div>
+                    <label className="academics-label">نوع المادة</label>
+                    <select
+                      className="input"
+                      value={courseForm.type}
+                      onChange={(e) =>
+                        setCourseForm((form) => ({ ...form, type: e.target.value }))
+                      }
+                    >
+                      <option value="THEORETICAL">نظري</option>
+                      <option value="PRACTICAL">عملي</option>
+                      <option value="BOTH">نظري وعملي</option>
+                    </select>
+                  </div>
                 </div>
                 <button
                   type="submit"
@@ -875,7 +1255,8 @@ export default function AcademicsPage() {
                 >
                   {actionLoading ? 'جارٍ الحفظ...' : 'إضافة المادة'}
                 </button>
-              </form>
+                </form>
+              </CollapsibleSection>
             )}
 
             {courses.length === 0 ? (
@@ -918,6 +1299,20 @@ export default function AcademicsPage() {
                           setEditCourse({ ...editCourse, description: e.target.value })
                         }
                       />
+                      <label className="academics-label" style={{ marginTop: '8px' }}>
+                        نوع المادة
+                      </label>
+                      <select
+                        className="input"
+                        value={editCourse.type}
+                        onChange={(e) =>
+                          setEditCourse({ ...editCourse, type: e.target.value })
+                        }
+                      >
+                        <option value="THEORETICAL">نظري</option>
+                        <option value="PRACTICAL">عملي</option>
+                        <option value="BOTH">نظري وعملي</option>
+                      </select>
                       <div style={{ display: 'flex', gap: '8px', marginTop: '12px' }}>
                         <button
                           type="submit"
@@ -948,7 +1343,7 @@ export default function AcademicsPage() {
                         <div style={{ minWidth: 0 }}>
                           <div style={{ fontSize: '17px', fontWeight: '800' }}>{course.name}</div>
                           <div style={{ fontSize: '12.5px', color: 'var(--text-muted)' }}>
-                            <bdi dir="ltr">{course.code}</bdi> · {stageLabel(course.stage)}
+                            <bdi dir="ltr">{course.code}</bdi> · {stageLabel(course.stage)} · {course.type === 'PRACTICAL' ? '🔬 عملي' : course.type === 'BOTH' ? '📚 نظري وعملي' : '📖 نظري'}
                           </div>
                           {course.description && (
                             <p
@@ -969,7 +1364,7 @@ export default function AcademicsPage() {
                         {course._count?.assignments ?? 0}
                       </div>
                       {canManageCourses && (
-                        <div style={{ display: 'flex', gap: '8px', marginTop: '12px' }}>
+                        <div className="academics-card-actions" style={{ display: 'flex', gap: '8px', marginTop: '12px' }}>
                           <button
                             type="button"
                             className="btn btn-sm"
@@ -979,6 +1374,7 @@ export default function AcademicsPage() {
                                 code: course.code,
                                 name: course.name,
                                 description: course.description || '',
+                                type: course.type || 'THEORETICAL',
                               })
                             }
                           >
@@ -1003,14 +1399,14 @@ export default function AcademicsPage() {
         ) : activeTab === 'timetable' ? (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '18px' }}>
             {canManageTimetable && (
-              <form
-                className="glass-card"
-                onSubmit={handleCreateTimetableEntry}
+              <CollapsibleSection
+                title={editTimetableId ? 'تعديل موعد في الجدول' : 'إضافة موعد إلى الجدول'}
+                contentId="create-timetable-form"
+                open={timetableFormOpen}
+                onOpenChange={setTimetableFormOpen}
                 style={{ padding: '18px' }}
               >
-                <h2 style={{ fontSize: '16px', fontWeight: '800', marginBottom: '6px' }}>
-                  {editTimetableId ? 'تعديل موعد في الجدول' : 'إضافة موعد إلى الجدول'}
-                </h2>
+                <form onSubmit={handleCreateTimetableEntry}>
                 <p style={{ fontSize: '12px', color: 'var(--text-muted)', marginBottom: '12px', lineHeight: 1.7 }}>
                   الجدول يحدد يوم ووقت محاضرة كل مادة لكل شعبة. يُستخدم للسماح للطالب بالحضور
                   في محاضرة شعبة أخرى للمادة نفسها (الموازي) مع تسجيل حضوره بملاحظة بدل الغياب.
@@ -1105,6 +1501,31 @@ export default function AcademicsPage() {
                       />
                     </div>
                   </div>
+                  <div>
+                    <label className="academics-label">النوع</label>
+                    <select
+                      className="input"
+                      value={timetableForm.type || 'THEORETICAL'}
+                      onChange={(e) =>
+                        setTimetableForm((form) => ({ ...form, type: e.target.value }))
+                      }
+                    >
+                      <option value="THEORETICAL">نظري</option>
+                      <option value="PRACTICAL">عملي</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="academics-label">القاعة / المختبر (اختياري)</label>
+                    <input
+                      className="input"
+                      value={timetableForm.hall || ''}
+                      onChange={(e) =>
+                        setTimetableForm((form) => ({ ...form, hall: e.target.value }))
+                      }
+                      placeholder="مثال: قاعة 15 أو مختبر الكيمياء"
+                      maxLength={100}
+                    />
+                  </div>
                 </div>
                 <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginTop: '14px' }}>
                   <button
@@ -1125,7 +1546,8 @@ export default function AcademicsPage() {
                     </button>
                   )}
                 </div>
-              </form>
+                </form>
+              </CollapsibleSection>
             )}
 
             <div className="glass-card" style={{ padding: '18px' }}>
@@ -1143,6 +1565,20 @@ export default function AcademicsPage() {
                   الجدول الدراسي ({timetableEntries.length})
                 </h2>
                 <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                  {canManageTimetable && (
+                    <button
+                      type="button"
+                      className="btn btn-primary btn-sm"
+                      onClick={() => {
+                        resetTimetableImport();
+                        setTimetableImportOpen(true);
+                      }}
+                      title="استيراد المواعيد من ملف Excel (بنفس تنسيق ملف التنزيل)"
+                      style={{ fontSize: '12.5px', fontWeight: '700' }}
+                    >
+                      ⬆️ استيراد الجدول (Excel)
+                    </button>
+                  )}
                   <button
                     type="button"
                     className="btn btn-sm"
@@ -1198,6 +1634,18 @@ export default function AcademicsPage() {
                       </option>
                     ))}
                   </select>
+                  <select
+                    className="input"
+                    style={{ width: 'auto' }}
+                    value={timetableFilter.type}
+                    onChange={(e) =>
+                      setTimetableFilter((filter) => ({ ...filter, type: e.target.value }))
+                    }
+                  >
+                    <option value="">كل الأنواع</option>
+                    <option value="THEORETICAL">📖 نظري فقط</option>
+                    <option value="PRACTICAL">🔬 عملي فقط</option>
+                  </select>
                 </div>
               </div>
 
@@ -1213,7 +1661,9 @@ export default function AcademicsPage() {
                     <thead>
                       <tr>
                         <th>المادة</th>
+                        <th>النوع</th>
                         <th>الشعبة</th>
+                        <th>القاعة</th>
                         <th>اليوم</th>
                         <th style={{ textAlign: 'center' }}>من</th>
                         <th style={{ textAlign: 'center' }}>إلى</th>
@@ -1227,9 +1677,28 @@ export default function AcademicsPage() {
                           <td style={{ fontWeight: '700' }}>
                             <bdi dir="ltr">{entry.course.code}</bdi> — {entry.course.name}
                           </td>
+                          <td style={{ textAlign: 'center' }}>
+                            <span
+                              style={{
+                                display: 'inline-block',
+                                padding: '2px 8px',
+                                borderRadius: '6px',
+                                fontSize: '12px',
+                                fontWeight: '700',
+                                backgroundColor: (entry.type === 'PRACTICAL' || entry.typeLabel === 'عملي') ? '#EDE9FE' : '#E0F2FE',
+                                color: (entry.type === 'PRACTICAL' || entry.typeLabel === 'عملي') ? '#6D28D9' : '#0369A1',
+                                border: `1px solid ${(entry.type === 'PRACTICAL' || entry.typeLabel === 'عملي') ? '#DDD6FE' : '#BAE6FD'}`,
+                              }}
+                            >
+                              {(entry.type === 'PRACTICAL' || entry.typeLabel === 'عملي') ? '🔬 عملي' : '📖 نظري'}
+                            </span>
+                          </td>
                           <td>
                             شعبة {entry.section.name}{' '}
                             {entry.section.studyPeriod === 'EVENING' ? '(مساء)' : '(صباح)'}
+                          </td>
+                          <td style={{ textAlign: 'center', fontWeight: '600' }}>
+                            {entry.hall || '—'}
                           </td>
                           <td>{entry.dayLabel}</td>
                           <td style={{ textAlign: 'center' }} dir="ltr">
@@ -1272,14 +1741,12 @@ export default function AcademicsPage() {
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '18px' }}>
             {canManageAssignments && (
-              <form
-                className="glass-card"
-                onSubmit={handleCreateAssignment}
+              <CollapsibleSection
+                title="إسناد مادة إلى تدريسي"
+                contentId="assign-course-form"
                 style={{ padding: '18px' }}
               >
-                <h2 style={{ fontSize: '16px', fontWeight: '800', marginBottom: '12px' }}>
-                  إسناد مادة إلى تدريسي
-                </h2>
+                <form onSubmit={handleCreateAssignment}>
                 <div className="academics-form-grid">
                   <div>
                     <label className="academics-label">التدريسي</label>
@@ -1334,7 +1801,8 @@ export default function AcademicsPage() {
                 >
                   {actionLoading ? 'جارٍ الحفظ...' : 'إسناد المادة'}
                 </button>
-              </form>
+                </form>
+              </CollapsibleSection>
             )}
 
             {visibleAssignments.length === 0 ? (
@@ -1384,6 +1852,244 @@ export default function AcademicsPage() {
           </div>
         )}
       </div>
+
+      {/* ======== Timetable Excel import modal ======== */}
+      {timetableImportOpen && canManageTimetable && (
+        <div
+          className="modal-backdrop"
+          onClick={() => {
+            if (!timetableImportLoading) closeTimetableImport();
+          }}
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(15, 23, 42, 0.45)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: '16px',
+            zIndex: 60,
+          }}
+        >
+          <div
+            className="glass-card"
+            style={{
+              background: '#FFFFFF',
+              width: '100%',
+              maxWidth: '760px',
+              maxHeight: '88vh',
+              overflowY: 'auto',
+              padding: '20px',
+              borderRadius: '18px',
+              border: '1px solid #E5E7EB',
+            }}
+            onClick={(event) => event.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+            aria-label="استيراد الجدول الدراسي من ملف Excel"
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '10px', marginBottom: '12px' }}>
+              <div>
+                <h2 style={{ fontSize: '18px', fontWeight: '800', color: '#111827', marginBottom: '4px' }}>
+                  ⬆️ استيراد الجدول الدراسي (Excel)
+                </h2>
+                <p style={{ fontSize: '12.5px', color: 'var(--text-secondary)', lineHeight: 1.8 }}>
+                  نفس تنسيق ملف «تنزيل الجدول (Excel)»: الأعمدة
+                  <strong> المادة، المرحلة، الشعبة، الدراسة، اليوم، من، إلى</strong>.
+                  تُطابق المواد برمزها والشعب برقمها مع الدراسة (صباحي/مسائي)، ويُتجاهل ما
+                  هو موجود مسبقًا.
+                </p>
+              </div>
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                onClick={closeTimetableImport}
+                disabled={timetableImportLoading}
+                aria-label="إغلاق"
+                style={{ flexShrink: 0 }}
+              >
+                ✕
+              </button>
+            </div>
+
+            <input
+              ref={timetableFileRef}
+              type="file"
+              accept=".xlsx,.xls,.csv"
+              onChange={handleTimetableFileUpload}
+              style={{ display: 'none' }}
+              aria-hidden="true"
+              tabIndex={-1}
+            />
+
+            {!timetableImportRows && (
+              <button
+                type="button"
+                onClick={() => timetableFileRef.current?.click()}
+                style={{
+                  width: '100%',
+                  padding: '28px 16px',
+                  border: '1.5px dashed #D1D5DB',
+                  borderRadius: '14px',
+                  background: '#F9FAFB',
+                  cursor: 'pointer',
+                  fontFamily: 'inherit',
+                  textAlign: 'center',
+                  transition: 'border-color 0.15s ease, background 0.15s ease',
+                }}
+              >
+                <div style={{ fontSize: '30px', lineHeight: 1, marginBottom: '8px' }}>📄</div>
+                <div style={{ fontWeight: '800', fontSize: '14px', color: '#111827' }}>
+                  اختر ملف Excel للجدول
+                </div>
+                <div style={{ fontSize: '11.5px', color: '#6B7280', marginTop: '4px' }}>
+                  .xlsx / .xls / .csv — يمكن ملؤه بتعديل ملف التنزيل السابق
+                </div>
+              </button>
+            )}
+
+            {timetableImportError && (
+              <div
+                role="alert"
+                style={{
+                  marginTop: '12px',
+                  background: '#FEF2F2',
+                  border: '1px solid #FCA5A5',
+                  color: '#991B1B',
+                  borderRadius: '12px',
+                  padding: '10px 12px',
+                  fontSize: '12px',
+                  fontWeight: '600',
+                  whiteSpace: 'pre-line',
+                  lineHeight: 1.8,
+                }}
+              >
+                {timetableImportError}
+              </div>
+            )}
+
+            {timetableImportRows && (
+              <>
+                {(() => {
+                  const ready = timetableImportRows.filter((row) => row.status === 'ok').length;
+                  const skipped = timetableImportRows.length - ready;
+                  const errors = timetableImportRows.filter((row) => row.status === 'error').length;
+                  return (
+                    <p style={{ fontSize: '12.5px', color: '#374151', margin: '12px 0 8px', fontWeight: '600' }}>
+                      المعروض: <strong style={{ color: '#065F46' }}>{ready} جاهز للاستيراد</strong>
+                      {skipped > 0 && <> · <strong style={{ color: '#92400E' }}>{skipped} سيتم تخطيه</strong></>}
+                      {errors > 0 && <> · <strong style={{ color: '#B91C1C' }}>{errors} خطأ</strong></>}
+                    </p>
+                  );
+                })()}
+
+                <div className="attendance-scroll" style={{ maxHeight: '46vh', border: '1px solid #E5E7EB', borderRadius: '12px', marginBottom: '14px' }}>
+                  <table className="attendance-table" style={{ fontSize: '12px', minWidth: '700px' }}>
+                    <thead>
+                      <tr>
+                        <th style={{ width: '44px' }}>صف</th>
+                        <th>المادة</th>
+                        <th>النوع</th>
+                        <th>الشعبة</th>
+                        <th>القاعة</th>
+                        <th>اليوم</th>
+                        <th style={{ textAlign: 'center' }}>من</th>
+                        <th style={{ textAlign: 'center' }}>إلى</th>
+                        <th>الحالة</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {timetableImportRows.map((row) => (
+                        <tr
+                          key={row.index}
+                          style={row.status === 'error' ? { background: '#FEF2F2' } : undefined}
+                        >
+                          <td style={{ color: 'var(--text-muted)' }}>{row.index}</td>
+                          <td>
+                            <div style={{ fontWeight: '700' }}>
+                              <bdi dir="ltr">{row.courseCode}</bdi>
+                              {row.courseName && <> — {row.courseName}</>}
+                            </div>
+                          </td>
+                          <td style={{ textAlign: 'center' }}>
+                            <span
+                              style={{
+                                display: 'inline-block',
+                                padding: '2px 6px',
+                                borderRadius: '4px',
+                                fontSize: '11px',
+                                fontWeight: '700',
+                                backgroundColor: row.type === 'PRACTICAL' ? '#EDE9FE' : '#E0F2FE',
+                                color: row.type === 'PRACTICAL' ? '#6D28D9' : '#0369A1',
+                              }}
+                            >
+                              {row.type === 'PRACTICAL' ? '🔬 عملي' : '📖 نظري'}
+                            </span>
+                          </td>
+                          <td>{row.sectionLabel}</td>
+                          <td style={{ textAlign: 'center' }}>{row.hall || '—'}</td>
+                          <td>{row.dayLabel}</td>
+                          <td style={{ textAlign: 'center' }} dir="ltr">{row.startTime}</td>
+                          <td style={{ textAlign: 'center' }} dir="ltr">{row.endTime}</td>
+                          <td>
+                            <span
+                              title={row.message}
+                              style={{
+                                display: 'inline-block',
+                                padding: '2px 8px',
+                                borderRadius: '999px',
+                                fontSize: '11px',
+                                fontWeight: '700',
+                                background:
+                                  row.status === 'ok' ? '#ECFDF5' : row.status === 'exists' ? '#F3F4F6' : '#FEF2F2',
+                                color:
+                                  row.status === 'ok' ? '#065F46' : row.status === 'exists' ? '#374151' : '#991B1B',
+                                border:
+                                  row.status === 'ok'
+                                    ? '1px solid #A7F3D0'
+                                    : row.status === 'exists'
+                                      ? '1px solid #D1D5DB'
+                                      : '1px solid #FCA5A5',
+                                maxWidth: '220px',
+                              }}
+                            >
+                              {row.status === 'ok' ? '✓ صالح' : row.status === 'exists' ? 'سيُتخطى' : row.message}
+                            </span>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end', flexWrap: 'wrap' }}>
+                  <button
+                    type="button"
+                    className="btn btn-ghost"
+                    onClick={resetTimetableImport}
+                    disabled={timetableImportLoading}
+                  >
+                    اختيار ملف آخر
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    onClick={handleConfirmTimetableImport}
+                    disabled={
+                      timetableImportLoading ||
+                      timetableImportRows.filter((row) => row.status === 'ok').length === 0
+                    }
+                  >
+                    {timetableImportLoading
+                      ? 'جارٍ الاستيراد...'
+                      : `استيراد ${timetableImportRows.filter((row) => row.status === 'ok').length} موعد`}
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
 
       <style jsx>{`
         .academics-form-grid {

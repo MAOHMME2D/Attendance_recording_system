@@ -14,12 +14,14 @@ import {
   type ImportRow,
   type SectionItem,
   type StudentListItem,
+  type AcademicStatus,
 } from '../../lib/api';
 import * as XLSX from 'xlsx';
 import StudentQrCardModal from '../../components/cards/StudentQrCardModal';
 import BulkStudentCardsModal from '../../components/cards/BulkStudentCardsModal';
 import ResetAbsencesModal from '../../components/modals/ResetAbsencesModal';
 import AttendancePdfReportModal from '../../components/modals/AttendancePdfReportModal';
+import StudentCourseEnrollmentModal from '../../components/modals/StudentCourseEnrollmentModal';
 import { useAuth, PERMISSIONS } from '../../lib/auth';
 
 const PERIOD_LABELS: Record<string, string> = {
@@ -79,6 +81,7 @@ function parseSpreadsheet(rows: unknown[][]): ImportRow[] {
   let colName = -1;
   let colCode = -1;
   let colOrder = -1;
+  let colSection = -1;
 
   for (let r = 0; r < Math.min(5, rows.length); r++) {
     const row = rows[r];
@@ -111,6 +114,14 @@ function parseSpreadsheet(rows: unknown[][]): ImportRow[] {
           text === 'no')
       ) {
         colOrder = index;
+      } else if (
+        colSection === -1 &&
+        (text.includes('شعب') ||
+          text.includes('section') ||
+          text.includes('فئة') ||
+          text.includes('group'))
+      ) {
+        colSection = index;
       }
     });
     break;
@@ -125,6 +136,7 @@ function parseSpreadsheet(rows: unknown[][]): ImportRow[] {
       // Legacy layout: ت, الاسم, الدراسة, الشعبة, الحضور, الغياب, الإجمالي, الباركود
       colOrder = 0;
       colName = 1;
+      colSection = 3;
       colCode = 7;
     } else {
       colCode = 0;
@@ -151,10 +163,14 @@ function parseSpreadsheet(rows: unknown[][]): ImportRow[] {
         ? Number(orderRaw)
         : undefined;
 
+    const sectionRaw =
+      colSection >= 0 ? String(row[colSection] ?? '').trim() : '';
+
     result.push({
       name,
       ...(code ? { studentCode: code } : {}),
       ...(orderIndex ? { orderIndex } : {}),
+      ...(sectionRaw ? { section: sectionRaw } : {}),
     });
   }
 
@@ -179,10 +195,12 @@ export default function StudentsPage() {
   const [stageFilter, setStageFilter] = useState<StageFilter>('ALL');
   const [periodFilter, setPeriodFilter] = useState<'ALL' | Period>('ALL');
   const [sectionFilter, setSectionFilter] = useState<string>('ALL');
+  const [statusFilter, setStatusFilter] = useState<'ALL' | AcademicStatus>('ALL');
 
   // Detail / cards
   const [selectedStudent, setSelectedStudent] = useState<StudentListItem | null>(null);
   const [selectedStudentForCard, setSelectedStudentForCard] = useState<StudentListItem | null>(null);
+  const [selectedStudentForCourses, setSelectedStudentForCourses] = useState<StudentListItem | null>(null);
   const [showBulkPrintModal, setShowBulkPrintModal] = useState(false);
 
   // Existing modals
@@ -279,6 +297,10 @@ export default function StudentsPage() {
       if (stageFilter !== 'ALL' && student.stage !== Number(stageFilter)) return false;
       if (periodFilter !== 'ALL' && student.studyPeriod !== periodFilter) return false;
       if (sectionFilter !== 'ALL' && student.sectionId !== sectionFilter) return false;
+      if (statusFilter !== 'ALL') {
+        const studentStatus = student.academicStatus || 'REGULAR';
+        if (studentStatus !== statusFilter) return false;
+      }
       if (term) {
         const matchesName = student.name.toLowerCase().includes(term);
         const matchesCode = student.studentCode.toLowerCase().includes(term);
@@ -289,7 +311,7 @@ export default function StudentsPage() {
       }
       return true;
     });
-  }, [students, stageFilter, periodFilter, sectionFilter, searchTerm]);
+  }, [students, stageFilter, periodFilter, sectionFilter, statusFilter, searchTerm]);
 
   const stageCounts = useMemo(() => {
     const counts: Record<number, number> = { 1: 0, 2: 0, 3: 0, 4: 0 };
@@ -297,6 +319,19 @@ export default function StudentsPage() {
       if (student.stage >= 1 && student.stage <= 4) counts[student.stage] += 1;
     });
     return counts;
+  }, [students]);
+
+  const statusCounts = useMemo(() => {
+    let regular = 0;
+    let repeat = 0;
+    let carryOver = 0;
+    students.forEach((s) => {
+      const st = s.academicStatus || 'REGULAR';
+      if (st === 'REPEAT') repeat++;
+      else if (st === 'CARRY_OVER') carryOver++;
+      else regular++;
+    });
+    return { regular, repeat, carryOver };
   }, [students]);
 
   const monthlyAlertCount = filteredStudents.filter(
@@ -564,10 +599,12 @@ export default function StudentsPage() {
         const orderRaw = parts[2];
         const orderIndex =
           orderRaw && !isNaN(Number(orderRaw)) ? Number(orderRaw) : undefined;
+        const sectionRaw = parts[3];
         rows.push({
           name,
           ...(code ? { studentCode: code } : {}),
           ...(orderIndex ? { orderIndex } : {}),
+          ...(sectionRaw ? { section: sectionRaw } : {}),
         });
       });
     runPreview(rows);
@@ -636,7 +673,7 @@ export default function StudentsPage() {
     <div style={{ minHeight: '100vh', background: 'var(--bg-primary)' }}>
       <Navbar />
 
-      <div className="students-page-main-layout" style={{ maxWidth: '1200px', margin: '0 auto', padding: '24px 20px 48px' }}>
+      <div className="students-page-main-layout app-page">
         {/* Header */}
         <div
           style={{
@@ -657,7 +694,7 @@ export default function StudentsPage() {
             </p>
           </div>
 
-          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+          <div className="page-actions">
             {canResetAbsences && (
               <button
                 className="btn btn-sm"
@@ -717,16 +754,8 @@ export default function StudentsPage() {
               </>
             )}
             <button
-              className="btn btn-sm"
+              className="btn btn-success btn-sm"
               onClick={() => setShowPdfReportModal(true)}
-              style={{
-                fontSize: '12px',
-                backgroundColor: '#DC2626',
-                color: '#FFFFFF',
-                border: 'none',
-                fontWeight: '700',
-                boxShadow: '0 2px 6px rgba(220, 38, 38, 0.25)',
-              }}
             >
               📄 تصدير كشف الغيابات (PDF)
             </button>
@@ -843,6 +872,34 @@ export default function StudentsPage() {
               }}
             >
               مسائي
+            </FilterChip>
+          </div>
+
+          <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap', marginBottom: '12px' }}>
+            <span style={{ fontSize: '13px', fontWeight: '800', color: '#111827' }}>الحالة الأكاديمية:</span>
+            <FilterChip
+              active={statusFilter === 'ALL'}
+              onClick={() => setStatusFilter('ALL')}
+            >
+              الكل ({students.length})
+            </FilterChip>
+            <FilterChip
+              active={statusFilter === 'REGULAR'}
+              onClick={() => setStatusFilter('REGULAR')}
+            >
+              منتظم ({statusCounts.regular})
+            </FilterChip>
+            <FilterChip
+              active={statusFilter === 'REPEAT'}
+              onClick={() => setStatusFilter('REPEAT')}
+            >
+              راسب / معيد ({statusCounts.repeat})
+            </FilterChip>
+            <FilterChip
+              active={statusFilter === 'CARRY_OVER'}
+              onClick={() => setStatusFilter('CARRY_OVER')}
+            >
+              طالب عبور ({statusCounts.carryOver})
             </FilterChip>
           </div>
 
@@ -1003,7 +1060,19 @@ export default function StudentsPage() {
                         {student.orderIndex ?? '-'}
                       </td>
                       <td>
-                        <div style={{ fontWeight: '700', color: '#111827' }}>{student.name}</div>
+                        <div style={{ fontWeight: '700', color: '#111827', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                          <span>{student.name}</span>
+                          {student.academicStatus === 'REPEAT' && (
+                            <span style={{ fontSize: '10.5px', background: '#FEE2E2', color: '#DC2626', border: '1px solid #FCA5A5', padding: '1px 6px', borderRadius: '10px', fontWeight: '700' }}>
+                              راسب ({student.customCourseCount || 0} مواد)
+                            </span>
+                          )}
+                          {student.academicStatus === 'CARRY_OVER' && (
+                            <span style={{ fontSize: '10.5px', background: '#ECFDF5', color: '#059669', border: '1px solid #A7F3D0', padding: '1px 6px', borderRadius: '10px', fontWeight: '700' }}>
+                              عبور ({student.customCourseCount || 0} مواد)
+                            </span>
+                          )}
+                        </div>
                         <div style={{ fontFamily: 'monospace', fontSize: '11.5px', color: '#6B7280' }}>
                           {student.studentCode}
                         </div>
@@ -1033,6 +1102,7 @@ export default function StudentsPage() {
                           canManageStudents={canManageStudents}
                           onView={() => setSelectedStudent(student)}
                           onCard={() => setSelectedStudentForCard(student)}
+                          onCourses={() => setSelectedStudentForCourses(student)}
                           onEdit={() => openEditModal(student)}
                           onDelete={() => setDeleteTarget(student)}
                         />
@@ -1050,7 +1120,7 @@ export default function StudentsPage() {
                   key={student.id}
                   className="glass-card"
                   style={{
-                    padding: '14px 16px',
+                    padding: '12px 14px',
                     ...(selectedIds.has(student.id)
                       ? { border: '1.5px solid #FCA5A5', background: '#FEF2F2' }
                       : {}),
@@ -1066,7 +1136,19 @@ export default function StudentsPage() {
                         style={{ width: '18px', height: '18px', cursor: 'pointer', marginTop: '3px' }}
                       />
                       <div style={{ minWidth: 0 }}>
-                        <div style={{ fontWeight: '800', fontSize: '15.5px', color: '#111827' }}>{student.name}</div>
+                        <div style={{ fontWeight: '800', fontSize: '15.5px', color: '#111827', display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+                          <span>{student.name}</span>
+                          {student.academicStatus === 'REPEAT' && (
+                            <span style={{ fontSize: '10.5px', background: '#FEE2E2', color: '#DC2626', border: '1px solid #FCA5A5', padding: '1px 6px', borderRadius: '10px', fontWeight: '700' }}>
+                              راسب ({student.customCourseCount || 0} مواد)
+                            </span>
+                          )}
+                          {student.academicStatus === 'CARRY_OVER' && (
+                            <span style={{ fontSize: '10.5px', background: '#ECFDF5', color: '#059669', border: '1px solid #A7F3D0', padding: '1px 6px', borderRadius: '10px', fontWeight: '700' }}>
+                              عبور ({student.customCourseCount || 0} مواد)
+                            </span>
+                          )}
+                        </div>
                         <div style={{ fontFamily: 'monospace', fontSize: '11.5px', color: '#6B7280' }}>
                           {student.studentCode}
                         </div>
@@ -1092,6 +1174,7 @@ export default function StudentsPage() {
                       canManageStudents={canManageStudents}
                       onView={() => setSelectedStudent(student)}
                       onCard={() => setSelectedStudentForCard(student)}
+                      onCourses={() => setSelectedStudentForCourses(student)}
                       onEdit={() => openEditModal(student)}
                       onDelete={() => setDeleteTarget(student)}
                     />
@@ -1403,7 +1486,7 @@ export default function StudentsPage() {
             <div style={{ marginBottom: '14px', padding: '14px', background: '#F9FAFB', borderRadius: '10px', border: '1px dashed var(--gold)', textAlign: 'center' }}>
               <p style={{ fontWeight: '700', marginBottom: '4px', fontSize: '13px', color: '#111827' }}>رفع ملف Excel / CSV</p>
               <p style={{ color: '#6B7280', fontSize: '12px', marginBottom: '10px' }}>
-                الأعمدة المتوقعة: الاسم، الباركود (اختياري)، التسلسل (اختياري)
+                الأعمدة المدعومة: الاسم، الشعبة (مثال: شعبة 1 أو A)، الباركود (اختياري)، التسلسل (اختياري)
               </p>
               <input
                 type="file"
@@ -1469,6 +1552,7 @@ export default function StudentsPage() {
                       <tr>
                         <th style={{ textAlign: 'center' }}>صف</th>
                         <th>الاسم</th>
+                        <th style={{ textAlign: 'center' }}>الشعبة</th>
                         <th>الباركود</th>
                         <th style={{ textAlign: 'center' }}>الحالة</th>
                       </tr>
@@ -1478,6 +1562,9 @@ export default function StudentsPage() {
                         <tr key={`${row.row}-${row.studentCode}`}>
                           <td style={{ textAlign: 'center' }}>{row.row}</td>
                           <td>{row.name}</td>
+                          <td style={{ textAlign: 'center', fontWeight: '700', color: row.section ? '#2563EB' : '#9CA3AF' }}>
+                            {row.section ? `شعبة ${row.section}` : (importSectionId ? 'افتراضية' : 'بدون شعبة')}
+                          </td>
                           <td style={{ fontFamily: 'monospace' }}>{row.studentCode}</td>
                           <td style={{ textAlign: 'center' }}>
                             {row.status === 'VALID' ? (
@@ -1616,6 +1703,16 @@ export default function StudentsPage() {
         records={filteredStudents}
       />
 
+      <StudentCourseEnrollmentModal
+        isOpen={Boolean(selectedStudentForCourses)}
+        student={selectedStudentForCourses}
+        onClose={() => setSelectedStudentForCourses(null)}
+        onSaved={() => {
+          setSuccessBanner('تم حفظ المواد المطالب بها للطالب بنجاح');
+          loadStudents();
+        }}
+      />
+
       <style jsx>{`
         .students-mobile-list {
           display: none;
@@ -1739,6 +1836,7 @@ function StudentActions({
   canManageStudents,
   onView,
   onCard,
+  onCourses,
   onEdit,
   onDelete,
 }: {
@@ -1747,14 +1845,16 @@ function StudentActions({
   canManageStudents: boolean;
   onView: () => void;
   onCard: () => void;
+  onCourses: () => void;
   onEdit: () => void;
   onDelete: () => void;
 }) {
+  const isCustom = student.academicStatus && student.academicStatus !== 'REGULAR';
   return (
-    <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap', justifyContent: 'center' }}>
+    <div className="student-actions">
       <button
         className="btn btn-ghost btn-sm"
-        style={{ fontSize: '11px', padding: '3px 8px' }}
+        style={{ fontSize: '12px', padding: '8px 12px' }}
         onClick={onView}
         title={`عرض سجل ${student.name}`}
       >
@@ -1763,7 +1863,7 @@ function StudentActions({
       {canIssueQr && (
         <button
           className="btn btn-ghost btn-sm"
-          style={{ fontSize: '11px', padding: '3px 8px' }}
+          style={{ fontSize: '12px', padding: '8px 12px' }}
           onClick={onCard}
         >
           QR
@@ -1773,14 +1873,27 @@ function StudentActions({
         <>
           <button
             className="btn btn-ghost btn-sm"
-            style={{ fontSize: '11px', padding: '3px 8px' }}
+            style={{
+              fontSize: '12px',
+              padding: '8px 12px',
+              color: isCustom ? (student.academicStatus === 'REPEAT' ? '#DC2626' : '#059669') : '#2563EB',
+              fontWeight: isCustom ? '800' : 'normal',
+            }}
+            onClick={onCourses}
+            title={`تحديد المواد والمطالبة الأكاديمية لـ ${student.name}`}
+          >
+            المواد
+          </button>
+          <button
+            className="btn btn-ghost btn-sm"
+            style={{ fontSize: '12px', padding: '8px 12px' }}
             onClick={onEdit}
           >
             تعديل
           </button>
           <button
             className="btn btn-ghost btn-sm"
-            style={{ fontSize: '11px', padding: '3px 8px', color: '#DC2626' }}
+            style={{ fontSize: '12px', padding: '8px 12px', color: '#DC2626' }}
             onClick={onDelete}
           >
             حذف

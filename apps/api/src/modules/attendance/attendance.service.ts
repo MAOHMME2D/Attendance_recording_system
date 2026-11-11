@@ -43,7 +43,8 @@ export class AttendanceService {
    *      lecturer sees the student came from another section.
    *
    * Returns 'OWN' when the student belongs to the lecture's sections (the
-   * normal case) or 'CROSS' when they are covered by the timetable rule.
+   * normal case), 'CROSS' when they are covered by the timetable rule, or
+   * 'CARRY_OVER' when a student is attending an enrolled cross-stage course.
    */
   private async assertStudentBelongsToLecture(
     lecture: {
@@ -60,6 +61,7 @@ export class AttendanceService {
       }> | null;
     },
     student: {
+      id?: string;
       name: string;
       studyPeriod: string | null;
       section: string | null;
@@ -68,11 +70,54 @@ export class AttendanceService {
       stage: number;
       deletedAt?: Date | null;
     },
-  ): Promise<'OWN' | 'CROSS'> {
+  ): Promise<'OWN' | 'CROSS' | 'CARRY_OVER'> {
     if (student.deletedAt) {
       throw new BadRequestException(
         `الطالب (${student.name}) محذوف من النظام، ولا يمكن تسجيل حضوره.`,
       );
+    }
+
+    const courseId = lecture.courseId ?? lecture.course?.id ?? null;
+
+    // Check custom student course enrollment (Repeating / Carry-over students)
+    let customEnrollment: {
+      academicStatus?: 'REGULAR' | 'REPEAT' | 'CARRY_OVER';
+      courseIds?: string[];
+    } | null = null;
+
+    if (student.id) {
+      const customSetting = await this.prisma.systemSetting.findUnique({
+        where: { key: `STUDENT_COURSES_${student.id}` },
+      });
+      if (customSetting?.value) {
+        try {
+          customEnrollment = JSON.parse(customSetting.value);
+        } catch {}
+      }
+    }
+
+    const isCustomActive = Boolean(
+      customEnrollment &&
+      customEnrollment.academicStatus &&
+      customEnrollment.academicStatus !== 'REGULAR',
+    );
+
+    if (isCustomActive && courseId) {
+      const isEnrolled =
+        Array.isArray(customEnrollment?.courseIds) &&
+        customEnrollment!.courseIds.includes(courseId);
+
+      if (!isEnrolled) {
+        throw new BadRequestException(
+          `الطالب (${student.name}) غير مسجل في هذه المادة (غير مطالب بها).`,
+        );
+      }
+    } else {
+      if (lecture.course?.stage && student.stage !== lecture.course.stage) {
+        throw new BadRequestException(
+          `الطالب (${student.name}) من المرحلة ${student.stage}، بينما هذه المحاضرة للمرحلة ${lecture.course.stage}. لا يمكن تسجيل حضوره.`,
+        );
+      }
     }
 
     const normalizePeriod = (value?: string | null) => {
@@ -84,12 +129,6 @@ export class AttendanceService {
     };
     const periodLabel = (value: string) =>
       value === 'MORNING' ? 'الصباحية' : value === 'EVENING' ? 'المسائية' : value;
-
-    if (lecture.course?.stage && student.stage !== lecture.course.stage) {
-      throw new BadRequestException(
-        `الطالب (${student.name}) من المرحلة ${student.stage}، بينما هذه المحاضرة للمرحلة ${lecture.course.stage}. لا يمكن تسجيل حضوره.`,
-      );
-    }
 
     const lecturePeriod = normalizePeriod(lecture.studyPeriod);
     const studentPeriod = normalizePeriod(student.studyPeriod);
@@ -128,13 +167,18 @@ export class AttendanceService {
       (studentSection && lectureSectionNames.includes(studentSection)) ||
       (lectureSectionIds.length === 0 && lectureSectionNames.length === 0); // unscoped legacy lecture
 
+    const isCarryOverCrossStage = Boolean(
+      courseId &&
+      ((customEnrollment && customEnrollment.academicStatus === 'CARRY_OVER') ||
+       (lecture.course?.stage && student.stage !== lecture.course.stage)),
+    );
+
     if (studentInLectureSection) {
-      return 'OWN';
+      return isCarryOverCrossStage ? 'CARRY_OVER' : 'OWN';
     }
 
     // Timetabled parallel session: the course runs for the student's own
     // section too, so attending another section's sitting is legitimate.
-    const courseId = lecture.courseId ?? lecture.course?.id ?? null;
     if (courseId && student.sectionId) {
       const entry = await this.prisma.timetableEntry.findFirst({
         where: { courseId, sectionId: student.sectionId },
@@ -143,6 +187,10 @@ export class AttendanceService {
       if (entry) {
         return 'CROSS';
       }
+    }
+
+    if (isCarryOverCrossStage) {
+      return 'CARRY_OVER';
     }
 
     const lectureSectionDisplay =
@@ -355,7 +403,9 @@ export class AttendanceService {
             note:
               scope === 'CROSS'
                 ? `طالب من الشعبة ${student.sectionRef?.name ?? student.section ?? 'غير محددة'}`
-                : undefined,
+                : scope === 'CARRY_OVER'
+                  ? `طالب عبور (المرحلة ${student.stage})`
+                  : undefined,
           },
         });
       } catch (error) {
@@ -523,7 +573,9 @@ export class AttendanceService {
                 note:
                   scope === 'CROSS'
                     ? `طالب من الشعبة ${student.sectionRef?.name ?? student.section ?? 'غير محددة'}`
-                    : existing.note,
+                    : scope === 'CARRY_OVER'
+                      ? `طالب عبور (المرحلة ${student.stage})`
+                      : existing.note,
               },
             });
             return { kind: 'SWITCHED', record: updated };
@@ -542,7 +594,9 @@ export class AttendanceService {
             note:
               scope === 'CROSS'
                 ? `طالب من الشعبة ${student.sectionRef?.name ?? student.section ?? 'غير محددة'}`
-                : undefined,
+                : scope === 'CARRY_OVER'
+                  ? `طالب عبور (المرحلة ${student.stage})`
+                  : undefined,
           },
         });
         return { kind: 'CREATED', record };

@@ -19,7 +19,7 @@
     "staff:create": "tsx scripts/create-staff.ts",
     "staff:disable-owner": "tsx scripts/disable-owner.ts",
     "setup:initial": "tsx scripts/initial-setup.ts",
-    "test": "pnpm run build && tsx --test --test-concurrency=1 test/security.test.ts test/staff-management.test.ts test/phase2.test.ts",
+    "test": "pnpm run build && tsx --test --test-concurrency=1 test/security.test.ts test/staff-management.test.ts test/phase2.test.ts test/reports.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

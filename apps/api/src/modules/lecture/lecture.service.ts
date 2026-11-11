@@ -599,25 +599,61 @@ export class LectureService {
       // no students produces zero records; it never widens to the whole stage.
       // Only the legacy fallback scope (a lecture born without any section)
       // still covers the stage rows.
-      const candidates = await tx.student.findMany({
+      const initialCandidates = await tx.student.findMany({
         where: { deletedAt: null, stage, studyPeriod },
         orderBy: [{ orderIndex: 'asc' }, { studentCode: 'asc' }],
       });
 
-      const sectionScoped = sectionIds.length > 0 || sectionNames.length > 0;
-      const allStudents = sectionScoped
-        ? candidates.filter((student) => {
-            if (student.sectionId && sectionIds.includes(student.sectionId)) {
-              return true;
+      // Filter repeating students and include carry-over students based on course enrollment
+      let candidates = initialCandidates;
+      if (lecture.courseId) {
+        const customSettings = await tx.systemSetting.findMany({
+          where: { key: { startsWith: 'STUDENT_COURSES_' } },
+        });
+        const customMap = new Map<string, { academicStatus: string; courseIds: string[] }>();
+        const carryOverStudentIds: string[] = [];
+
+        for (const s of customSettings) {
+          try {
+            const studentId = s.key.replace('STUDENT_COURSES_', '');
+            const parsed = JSON.parse(s.value);
+            if (parsed && Array.isArray(parsed.courseIds)) {
+              customMap.set(studentId, parsed);
+              if (
+                parsed.academicStatus !== 'REGULAR' &&
+                parsed.courseIds.includes(lecture.courseId)
+              ) {
+                carryOverStudentIds.push(studentId);
+              }
             }
-            // Legacy rows without sectionId still carry the text mirror.
-            if (!student.sectionId) {
-              const key = normalizeSection(student.section);
-              return Boolean(key) && sectionNames.includes(key);
-            }
-            return false;
-          })
-        : candidates;
+          } catch {}
+        }
+
+        // Repeating students in this stage who passed this course are excluded (never marked absent)
+        candidates = initialCandidates.filter((student) => {
+          const custom = customMap.get(student.id);
+          if (custom && custom.academicStatus !== 'REGULAR') {
+            return custom.courseIds.includes(lecture.courseId!);
+          }
+          return true;
+        });
+
+        // Carry-over students from other stages taking this course
+        if (carryOverStudentIds.length > 0) {
+          const existingIds = new Set(candidates.map((c) => c.id));
+          const neededIds = carryOverStudentIds.filter((cid) => !existingIds.has(cid));
+          if (neededIds.length > 0) {
+            const carryOverStudents = await tx.student.findMany({
+              where: {
+                id: { in: neededIds },
+                deletedAt: null,
+                studyPeriod,
+              },
+            });
+            candidates = candidates.concat(carryOverStudents);
+          }
+        }
+      }
 
       const existingRecords = await tx.attendanceRecord.findMany({
         where: { lectureId: id },
@@ -632,6 +668,25 @@ export class LectureService {
           .map((record) => String(record.studentCode || '').trim())
           .filter(Boolean),
       );
+
+      const sectionScoped = sectionIds.length > 0 || sectionNames.length > 0;
+      const allStudents = sectionScoped
+        ? candidates.filter((student) => {
+            if (student.sectionId && sectionIds.includes(student.sectionId)) {
+              return true;
+            }
+            // Legacy rows without sectionId still carry the text mirror.
+            const key = normalizeSection(student.section);
+            if (Boolean(key) && sectionNames.includes(key)) {
+              return true;
+            }
+            // If already attended (e.g. cross-section or carry-over attendee)
+            if (attendedStudentIds.has(student.id)) {
+              return true;
+            }
+            return false;
+          })
+        : candidates;
 
       // For any scoped student who did not attend, they are either covered by
       // a parallel session of the same course this week, or explicitly
