@@ -448,7 +448,7 @@ ab84a006-44fe-4a31-958e-2433cd35aa2e	881930b1-ac6d-40e9-aed4-23b38a1530c6	2c591c
 --
 
 COPY public."StaffUser" (id, "staffId", "fullName", role, "passwordHash", "isActive", "failedLoginCount", "lockedUntil", "lastLoginAt", "createdAt", "updatedAt") FROM stdin;
-881930b1-ac6d-40e9-aed4-23b38a1530c6	mohammed	محمد	SYSTEM_OWNER	$2b$12$NHjDF19XCv4ko.WpLtbdG.xHlH8GHIEoC5UcOSbOq7VZebLyqRIJG	t	0	\N	2026-11-11 06:54:46.019	2026-11-06 10:07:22.378	2026-11-11 17:19:30.512
+881930b1-ac6d-40e9-aed4-23b38a1530c6	mohammed	محمد	SYSTEM_OWNER	$2b$12$AHOyQ.d61Jv.XzKqDdDSeupJeUwVI/a2UwZqFH8nsUV7.MOQ5MEcm	t	0	\N	2026-11-11 06:54:46.019	2026-11-06 10:07:22.378	2026-11-11 17:29:20.438
 6ec9c995-64b3-413e-bab8-9533d21d126f	aqeel	عقيل سلمان	LECTURER	$2b$12$oc3YLLKxRtfZkRqhOeHU1OlHGdHIMRmxaQ0PkfbDMGuHHQlMp/Zse	t	0	\N	\N	2026-11-11 14:41:48.721	2026-11-11 14:41:48.721
 ecbfc25f-cc04-45b5-9f21-74665f4f10f4	zainab	د. زينب عبد الفتاح	LECTURER	$2b$12$oc3YLLKxRtfZkRqhOeHU1OlHGdHIMRmxaQ0PkfbDMGuHHQlMp/Zse	t	0	\N	\N	2026-11-11 14:41:48.726	2026-11-11 14:41:48.726
 8a3efc47-e900-49ef-9caf-8e3fa27ac8b7	jaafar	د. جعفر حلف	LECTURER	$2b$12$oc3YLLKxRtfZkRqhOeHU1OlHGdHIMRmxaQ0PkfbDMGuHHQlMp/Zse	t	0	\N	\N	2026-11-11 14:41:48.727	2026-11-11 14:41:48.727
