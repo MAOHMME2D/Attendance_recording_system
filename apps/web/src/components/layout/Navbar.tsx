@@ -98,12 +98,6 @@ export default function Navbar() {
           </button>
         )}
 
-        <div className="nav-dev-badge" title="مطور ومبرمج النظام: Mohammed Redha">
-          <span style={{ fontSize: '12px' }}>⚡</span>
-          <span>تطوير:</span>
-          <strong style={{ color: '#FFFFFF', letterSpacing: '0.3px' }}>Mohammed Redha</strong>
-        </div>
-
         <button
           type="button"
           className="nav-menu-toggle"

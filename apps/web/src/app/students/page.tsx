@@ -293,10 +293,29 @@ export default function StudentsPage() {
 
   const filteredStudents = useMemo(() => {
     const term = searchTerm.trim().toLowerCase();
+    const filterSection =
+      sectionFilter !== 'ALL'
+        ? sections.find((section) => section.id === sectionFilter) || null
+        : null;
     return students.filter((student) => {
-      if (stageFilter !== 'ALL' && student.stage !== Number(stageFilter)) return false;
+      if (stageFilter !== 'ALL') {
+        const stage = Number(stageFilter);
+        const requiredStages = student.customCourseStages || [];
+        // A carry-over student stays registered in his own stage but must also
+        // appear with the lower stage he is required to take a course from.
+        if (student.stage !== stage && !requiredStages.includes(stage)) return false;
+      }
       if (periodFilter !== 'ALL' && student.studyPeriod !== periodFilter) return false;
-      if (sectionFilter !== 'ALL' && student.sectionId !== sectionFilter) return false;
+      if (filterSection) {
+        const sectionName = String(filterSection.name || '').trim();
+        const ownSection = String(student.section || '').trim();
+        const matchesSection =
+          student.sectionId === filterSection.id ||
+          (student.stage !== filterSection.stage &&
+            Boolean(sectionName) &&
+            ownSection === sectionName);
+        if (!matchesSection) return false;
+      }
       if (statusFilter !== 'ALL') {
         const studentStatus = student.academicStatus || 'REGULAR';
         if (studentStatus !== statusFilter) return false;
@@ -311,15 +330,47 @@ export default function StudentsPage() {
       }
       return true;
     });
-  }, [students, stageFilter, periodFilter, sectionFilter, statusFilter, searchTerm]);
+  }, [students, stageFilter, periodFilter, sectionFilter, statusFilter, searchTerm, sections]);
 
   const stageCounts = useMemo(() => {
     const counts: Record<number, number> = { 1: 0, 2: 0, 3: 0, 4: 0 };
     students.forEach((student) => {
-      if (student.stage >= 1 && student.stage <= 4) counts[student.stage] += 1;
+      const stages = new Set<number>([student.stage]);
+      for (const stage of student.customCourseStages || []) stages.add(stage);
+      stages.forEach((stage) => {
+        if (stage >= 1 && stage <= 4) counts[stage] += 1;
+      });
     });
     return counts;
   }, [students]);
+
+  // Counters follow the selected stage: a carry-over student's attendance is
+  // counted only for the stage of the course it belongs to, so the stage 1
+  // view never shows the stage 2 numbers (and the other way round).
+  const statsFor = useCallback(
+    (student: StudentListItem) => {
+      if (stageFilter === 'ALL') {
+        return {
+          presentCount: student.presentCount,
+          absentCount: student.absentCount,
+          totalLectures: student.totalLectures,
+        };
+      }
+      const stage = Number(stageFilter);
+      let presentCount = 0;
+      let absentCount = 0;
+      for (const item of student.history || []) {
+        // A record whose course stage is unknown belongs to the student's own
+        // stage; records of other stages are excluded from this view.
+        const recordStage = item.courseStage ?? student.stage;
+        if (recordStage !== stage) continue;
+        if (item.status === 'PRESENT') presentCount += 1;
+        else if (item.status === 'ABSENT') absentCount += 1;
+      }
+      return { presentCount, absentCount, totalLectures: presentCount + absentCount };
+    },
+    [stageFilter],
+  );
 
   const statusCounts = useMemo(() => {
     let regular = 0;
@@ -335,13 +386,23 @@ export default function StudentsPage() {
   }, [students]);
 
   const monthlyAlertCount = filteredStudents.filter(
-    (student) => student.absentCount >= 3,
+    (student) => statsFor(student).absentCount >= 3,
   ).length;
 
   const selectedFilterSection =
     sectionFilter !== 'ALL'
       ? sections.find((section) => section.id === sectionFilter) || null
       : null;
+
+  // The detail modal mirrors the stage filter so its numbers and history match
+  // the row the user opened.
+  const selectedStudentStats = selectedStudent ? statsFor(selectedStudent) : null;
+  const selectedStudentHistory =
+    selectedStudent && stageFilter !== 'ALL'
+      ? selectedStudent.history.filter(
+          (item) => (item.courseStage ?? selectedStudent.stage) === Number(stageFilter),
+        )
+      : selectedStudent?.history || [];
 
   // Client-side pagination keeps the table usable with hundreds of students.
   const totalPages = Math.max(1, Math.ceil(filteredStudents.length / STUDENTS_PAGE_SIZE));
@@ -636,17 +697,20 @@ export default function StudentsPage() {
       return;
     }
 
-    const exportData = filteredStudents.map((student, index) => ({
-      ت: student.orderIndex != null ? student.orderIndex : index + 1,
-      'اسم الطالب': student.name,
-      المرحلة: stageLabel(student.stage),
-      الدراسة: PERIOD_LABELS[student.studyPeriod || 'MORNING'] || student.studyPeriod,
-      الشعبة: student.sectionLabel || student.section || '',
-      'عدد مرات الحضور': student.presentCount,
-      'عدد مرات الغياب': student.absentCount,
-      'اجمالى المحاضرات': student.totalLectures,
-      الباركود: student.studentCode,
-    }));
+    const exportData = filteredStudents.map((student, index) => {
+      const stats = statsFor(student);
+      return {
+        ت: student.orderIndex != null ? student.orderIndex : index + 1,
+        'اسم الطالب': student.name,
+        المرحلة: stageLabel(student.stage),
+        الدراسة: PERIOD_LABELS[student.studyPeriod || 'MORNING'] || student.studyPeriod,
+        الشعبة: student.sectionLabel || student.section || '',
+        'عدد مرات الحضور': stats.presentCount,
+        'عدد مرات الغياب': stats.absentCount,
+        'اجمالى المحاضرات': stats.totalLectures,
+        الباركود: student.studentCode,
+      };
+    });
 
     const worksheet = XLSX.utils.json_to_sheet(exportData);
     worksheet['!cols'] = [
@@ -1042,7 +1106,9 @@ export default function StudentsPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {pagedStudents.map((student) => (
+                  {pagedStudents.map((student) => {
+                    const stats = statsFor(student);
+                    return (
                     <tr
                       key={student.id}
                       style={selectedIds.has(student.id) ? { background: '#FEF2F2' } : undefined}
@@ -1087,13 +1153,13 @@ export default function StudentsPage() {
                         {student.sectionLabel || student.section || '-'}
                       </td>
                       <td style={{ textAlign: 'center', color: '#059669', fontWeight: '700' }}>
-                        {student.presentCount}
+                        {stats.presentCount}
                       </td>
-                      <td style={{ textAlign: 'center', color: student.absentCount > 0 ? '#DC2626' : '#6B7280', fontWeight: '700' }}>
-                        {student.absentCount}
+                      <td style={{ textAlign: 'center', color: stats.absentCount > 0 ? '#DC2626' : '#6B7280', fontWeight: '700' }}>
+                        {stats.absentCount}
                       </td>
                       <td style={{ textAlign: 'center', fontWeight: '600', color: '#374151' }}>
-                        {student.totalLectures}
+                        {stats.totalLectures}
                       </td>
                       <td>
                         <StudentActions
@@ -1108,14 +1174,17 @@ export default function StudentsPage() {
                         />
                       </td>
                     </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
 
             {/* Mobile cards */}
             <div className="students-mobile-list">
-              {pagedStudents.map((student) => (
+              {pagedStudents.map((student) => {
+                const stats = statsFor(student);
+                return (
                 <div
                   key={student.id}
                   className="glass-card"
@@ -1162,9 +1231,9 @@ export default function StudentsPage() {
                   </div>
 
                   <div style={{ display: 'flex', gap: '8px', marginTop: '10px', flexWrap: 'wrap' }}>
-                    <MiniStat label="حضور" value={student.presentCount} tone="#059669" />
-                    <MiniStat label="غياب" value={student.absentCount} tone={student.absentCount > 0 ? '#DC2626' : '#6B7280'} />
-                    <MiniStat label="إجمالي" value={student.totalLectures} />
+                    <MiniStat label="حضور" value={stats.presentCount} tone="#059669" />
+                    <MiniStat label="غياب" value={stats.absentCount} tone={stats.absentCount > 0 ? '#DC2626' : '#6B7280'} />
+                    <MiniStat label="إجمالي" value={stats.totalLectures} />
                   </div>
 
                   <div style={{ marginTop: '12px' }}>
@@ -1180,7 +1249,8 @@ export default function StudentsPage() {
                     />
                   </div>
                 </div>
-              ))}
+                );
+              })}
             </div>
 
             {totalPages > 1 && (
@@ -1243,20 +1313,20 @@ export default function StudentsPage() {
             </div>
 
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '10px', marginBottom: '18px' }}>
-              <MiniStat label="حضور" value={selectedStudent.presentCount} tone="#059669" />
-              <MiniStat label="غياب" value={selectedStudent.absentCount} tone="#DC2626" />
-              <MiniStat label="إجمالي" value={selectedStudent.totalLectures} />
+              <MiniStat label="حضور" value={selectedStudentStats?.presentCount ?? 0} tone="#059669" />
+              <MiniStat label="غياب" value={selectedStudentStats?.absentCount ?? 0} tone="#DC2626" />
+              <MiniStat label="إجمالي" value={selectedStudentStats?.totalLectures ?? 0} />
             </div>
 
             <h3 style={{ fontSize: '14px', fontWeight: '700', marginBottom: '10px', color: '#374151' }}>سجل المحاضرات:</h3>
 
-            {selectedStudent.history.length === 0 ? (
+            {selectedStudentHistory.length === 0 ? (
               <p style={{ color: 'var(--text-muted)', fontSize: '13px', textAlign: 'center', padding: '16px' }}>
                 لم يتم تسجيل أي حضور بعد لهذا الطالب
               </p>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                {selectedStudent.history.map((item) => (
+                {selectedStudentHistory.map((item) => (
                   <div key={item.attendanceId} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 12px', background: '#F9FAFB', borderRadius: '8px', fontSize: '12px', border: '1px solid #F3F4F6', gap: '10px' }}>
                     <div>
                       <div style={{ fontWeight: '600', color: '#111827' }}>{item.lectureName}</div>
@@ -1700,7 +1770,10 @@ export default function StudentsPage() {
               ? `${STAGE_LABELS[stageFilter as 1 | 2 | 3 | 4]}`
               : 'كافة الشُعب'
         }
-        records={filteredStudents}
+        records={filteredStudents.map((student) => ({
+          ...student,
+          ...statsFor(student),
+        }))}
       />
 
       <StudentCourseEnrollmentModal

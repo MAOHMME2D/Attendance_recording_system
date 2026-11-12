@@ -2790,6 +2790,211 @@ describe('registration privacy and current-section reports', () => {
       assert.equal(closeRes.status, 200, JSON.stringify(closeRes.body));
     });
 
+    it('marks a carry-over student absent for a lower-stage course lecture he missed', async () => {
+      const courseStage1 = await prisma.course.create({
+        data: { code: 'CS100', name: 'أساسيات الحاسوب', stage: 1 },
+      });
+      await prisma.teachingAssignment.create({
+        data: { staffUserId: userIds.lecturerA!, courseId: courseStage1.id },
+      });
+
+      // studentA is Stage 2 / section "1"; required for a Stage 1 course.
+      const enroll = await api(`/api/students/${ids.studentA}/enrollment`, {
+        method: 'PUT',
+        token: tokens.registrar!,
+        body: {
+          academicStatus: 'CARRY_OVER',
+          courseIds: [ids.courseC1, courseStage1.id],
+          notes: 'عبور مادة من المرحلة الأولى',
+        },
+      });
+      assert.equal(enroll.status, 200, JSON.stringify(enroll.body));
+
+      // Stage 1 lecture for the same section number ("1") — student did not attend.
+      const lecture = await prisma.lecture.create({
+        data: {
+          name: 'محاضرة مرحلة أولى بدون حضور',
+          studyPeriod: 'MORNING',
+          section: '1',
+          sectionId: ids.sectionS1A,
+          courseId: courseStage1.id,
+          status: 'ACTIVE',
+          qrToken: `phase2-carryover-${Date.now()}`,
+          qrExpiresAt: new Date(Date.now() + 60 * 60 * 1000),
+          createdByUserId: userIds.lecturerA,
+          conductedByUserId: userIds.lecturerA,
+          lectureSections: { create: [{ sectionId: ids.sectionS1A }] },
+        },
+      });
+      const lectureId = lecture.id;
+
+      const closeRes = await api(`/api/lectures/${lectureId}/close`, {
+        method: 'PATCH',
+        token: tokens.lecturerA!,
+      });
+      assert.equal(closeRes.status, 200, JSON.stringify(closeRes.body));
+
+      const reportRes = await api(`/api/lectures/${lectureId}`, {
+        token: tokens.head!,
+      });
+      const record = reportRes.body.attendances.find(
+        (a: any) => a.studentId === ids.studentA,
+      );
+      assert.ok(record, 'carry-over student must appear in the lecture roster');
+      assert.equal(record.status, 'ABSENT');
+      assert.equal(record.studentCode, ids.codeA);
+    });
+
+    it('records absence for a carry-over student even when the lecture section number differs', async () => {
+      const course = await prisma.course.create({
+        data: { code: 'CS102', name: 'مقدمة البرمجة', stage: 1 },
+      });
+      await prisma.teachingAssignment.create({
+        data: { staffUserId: userIds.lecturerA!, courseId: course.id },
+      });
+      const student = await prisma.student.create({
+        data: {
+          studentCode: 'S2-8100',
+          name: 'طالب عبور أ',
+          stage: 2,
+          studyPeriod: 'MORNING',
+          section: '1',
+          sectionId: ids.sectionS2A,
+        },
+      });
+
+      const enroll = await api(`/api/students/${student.id}/enrollment`, {
+        method: 'PUT',
+        token: tokens.registrar!,
+        body: { academicStatus: 'CARRY_OVER', courseIds: [course.id] },
+      });
+      assert.equal(enroll.status, 200, JSON.stringify(enroll.body));
+
+      // The student is section "1"; the lecture runs section "2" and the
+      // course has no timetable yet, so he has no designated section.
+      const lecture = await prisma.lecture.create({
+        data: {
+          name: 'محاضرة مرحلة أولى - شعبة أخرى',
+          studyPeriod: 'MORNING',
+          section: '2',
+          sectionId: ids.sectionS1B,
+          courseId: course.id,
+          status: 'ACTIVE',
+          qrToken: `phase2-carryover-other-${Date.now()}`,
+          qrExpiresAt: new Date(Date.now() + 60 * 60 * 1000),
+          createdByUserId: userIds.lecturerA,
+          conductedByUserId: userIds.lecturerA,
+          lectureSections: { create: [{ sectionId: ids.sectionS1B }] },
+        },
+      });
+
+      const closeRes = await api(`/api/lectures/${lecture.id}/close`, {
+        method: 'PATCH',
+        token: tokens.lecturerA!,
+      });
+      assert.equal(closeRes.status, 200, JSON.stringify(closeRes.body));
+
+      const reportRes = await api(`/api/lectures/${lecture.id}`, {
+        token: tokens.head!,
+      });
+      const record = reportRes.body.attendances.find(
+        (a: any) => a.studentId === student.id,
+      );
+      assert.ok(record, 'carry-over student must be counted in the course lecture');
+      assert.equal(record.status, 'ABSENT');
+
+      // The course follow-up and the stage report must list him as well.
+      const followupRes = await api(
+        `/api/followup/students?courseId=${course.id}&stage=1&sectionId=${ids.sectionS1A}&pageSize=100`,
+        { token: tokens.lecturerA! },
+      );
+      assert.equal(followupRes.status, 200, JSON.stringify(followupRes.body));
+      assert.ok(
+        followupRes.body.items.some((item: any) => item.id === student.id),
+        'carry-over student must appear in the course follow-up',
+      );
+
+      const stageReport = await api('/api/reports/students?stage=1&pageSize=100', {
+        token: tokens.head!,
+      });
+      assert.equal(stageReport.status, 200, JSON.stringify(stageReport.body));
+      assert.ok(
+        stageReport.body.items.some((item: any) => item.id === student.id),
+        'carry-over student must appear in the stage 1 report',
+      );
+    });
+
+    it('does not count a carry-over student in another section when the timetable places him in his own', async () => {
+      const course = await prisma.course.create({
+        data: { code: 'CS103', name: 'الرياضيات العامة', stage: 1 },
+      });
+      await prisma.teachingAssignment.create({
+        data: { staffUserId: userIds.lecturerA!, courseId: course.id },
+      });
+      const student = await prisma.student.create({
+        data: {
+          studentCode: 'S2-8101',
+          name: 'طالب عبور ب',
+          stage: 2,
+          studyPeriod: 'MORNING',
+          section: '1',
+          sectionId: ids.sectionS2A,
+        },
+      });
+      // The college schedule runs this course for section "1" — the student's
+      // own section number — so he belongs to that section's lecture.
+      await prisma.timetableEntry.create({
+        data: {
+          courseId: course.id,
+          sectionId: ids.sectionS1A,
+          dayOfWeek: 1,
+          startTime: '08:00',
+          endTime: '09:00',
+        },
+      });
+
+      const enroll = await api(`/api/students/${student.id}/enrollment`, {
+        method: 'PUT',
+        token: tokens.registrar!,
+        body: { academicStatus: 'CARRY_OVER', courseIds: [course.id] },
+      });
+      assert.equal(enroll.status, 200, JSON.stringify(enroll.body));
+
+      const lecture = await prisma.lecture.create({
+        data: {
+          name: 'محاضرة مرحلة أولى - شعبة ثانية',
+          studyPeriod: 'MORNING',
+          section: '2',
+          sectionId: ids.sectionS1B,
+          courseId: course.id,
+          status: 'ACTIVE',
+          qrToken: `phase2-carryover-scheduled-${Date.now()}`,
+          qrExpiresAt: new Date(Date.now() + 60 * 60 * 1000),
+          createdByUserId: userIds.lecturerA,
+          conductedByUserId: userIds.lecturerA,
+          lectureSections: { create: [{ sectionId: ids.sectionS1B }] },
+        },
+      });
+
+      const closeRes = await api(`/api/lectures/${lecture.id}/close`, {
+        method: 'PATCH',
+        token: tokens.lecturerA!,
+      });
+      assert.equal(closeRes.status, 200, JSON.stringify(closeRes.body));
+
+      const reportRes = await api(`/api/lectures/${lecture.id}`, {
+        token: tokens.head!,
+      });
+      const record = reportRes.body.attendances.find(
+        (a: any) => a.studentId === student.id,
+      );
+      assert.equal(
+        record,
+        undefined,
+        'a carry-over student scheduled in section 1 must not be marked in section 2',
+      );
+    });
+
     it('resets student enrollment back to regular when academicStatus is REGULAR', async () => {
       const resetRes = await api(`/api/students/${ids.studentA}/enrollment`, {
         method: 'PUT',

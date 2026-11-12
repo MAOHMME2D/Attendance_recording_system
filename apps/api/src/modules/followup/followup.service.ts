@@ -118,31 +118,67 @@ export class FollowupService {
     return section;
   }
 
+  /** Students explicitly required to take one of the given courses. */
+  private async carryOverStudentIds(courseIds: string[]): Promise<string[]> {
+    if (courseIds.length === 0) return [];
+    const settings = await this.prisma.systemSetting.findMany({
+      where: { key: { startsWith: 'STUDENT_COURSES_' } },
+    });
+    const ids: string[] = [];
+    for (const setting of settings) {
+      try {
+        const parsed = JSON.parse(setting.value);
+        if (
+          parsed &&
+          parsed.academicStatus !== 'REGULAR' &&
+          Array.isArray(parsed.courseIds) &&
+          parsed.courseIds.some((courseId: string) => courseIds.includes(courseId))
+        ) {
+          ids.push(setting.key.replace('STUDENT_COURSES_', ''));
+        }
+      } catch {}
+    }
+    return ids;
+  }
+
   private studentWhere(
     scope: FollowupScope,
     filters: FollowupFilters,
     section: SectionFilter | null,
+    carryOverIds: string[],
   ) {
     const where: any = { deletedAt: null };
-
-    if (filters.stage) {
-      const stage = requireAcademicStage(filters.stage);
-      if (!scope.stages.includes(stage)) {
-        throw new ForbiddenException('هذه المرحلة خارج نطاق موادك');
-      }
-      where.stage = stage;
-    } else {
-      where.stage = { in: scope.stages };
-    }
-
     const and: any[] = [];
+
+    const stageCondition: any = filters.stage
+      ? (() => {
+          const stage = requireAcademicStage(filters.stage);
+          if (!scope.stages.includes(stage)) {
+            throw new ForbiddenException('هذه المرحلة خارج نطاق موادك');
+          }
+          return { stage };
+        })()
+      : { stage: { in: scope.stages } };
+
+    // A carry-over student keeps his own stage but is required to take one of
+    // this course's lectures, so he must appear in the course's follow-up.
+    and.push(
+      carryOverIds.length > 0
+        ? { OR: [stageCondition, { id: { in: carryOverIds } }] }
+        : stageCondition,
+    );
+
     if (section) {
-      and.push({
-        OR: [
-          { sectionId: section.id },
-          { sectionId: null, section: section.name },
-        ],
-      });
+      const matches: any[] = [
+        { sectionId: section.id },
+        { sectionId: null, section: section.name },
+      ];
+      // Cross-stage sections share the same number but not the same row, so a
+      // carry-over student is matched by his section number.
+      if (carryOverIds.length > 0) {
+        matches.push({ id: { in: carryOverIds }, section: section.name });
+      }
+      and.push({ OR: matches });
     }
 
     if (filters.search && filters.search.trim()) {
@@ -163,7 +199,8 @@ export class FollowupService {
   async overview(user: AuthenticatedUser, filters: FollowupFilters) {
     const scope = await this.resolveScope(user, filters.courseId);
     const section = await this.resolveSectionFilter(scope, filters.sectionId);
-    const where = this.studentWhere(scope, filters, section);
+    const carryOverIds = await this.carryOverStudentIds(scope.courseIds);
+    const where = this.studentWhere(scope, filters, section, carryOverIds);
 
     const students = await this.prisma.student.findMany({
       where,
@@ -239,7 +276,8 @@ export class FollowupService {
   async students(user: AuthenticatedUser, filters: FollowupFilters) {
     const scope = await this.resolveScope(user, filters.courseId);
     const section = await this.resolveSectionFilter(scope, filters.sectionId);
-    const where = this.studentWhere(scope, filters, section);
+    const carryOverIds = await this.carryOverStudentIds(scope.courseIds);
+    const where = this.studentWhere(scope, filters, section, carryOverIds);
 
     const rows = await this.prisma.student.findMany({
       where,
@@ -357,6 +395,7 @@ export class FollowupService {
   ) {
     const scope = await this.resolveScope(user, filters.courseId);
     const section = await this.resolveSectionFilter(scope, filters.sectionId);
+    const carryOverIds = await this.carryOverStudentIds(scope.courseIds);
 
     const student = await this.prisma.student.findFirst({
       where: { id: studentId, deletedAt: null },
@@ -372,9 +411,11 @@ export class FollowupService {
       },
     });
 
+    const isCarryOver = Boolean(student && carryOverIds.includes(student.id));
+
     // Do not reveal whether an out-of-scope student exists. A changed
     // studentId can never leak a student from another stage or section.
-    if (!student || !scope.stages.includes(student.stage)) {
+    if (!student || (!scope.stages.includes(student.stage) && !isCarryOver)) {
       throw new NotFoundException('الطالب غير موجود ضمن نطاق موادك');
     }
 
@@ -382,6 +423,8 @@ export class FollowupService {
       const matches =
         student.sectionId === section.id ||
         (student.sectionId === null &&
+          normalizeSection(student.section) === normalizeSection(section.name)) ||
+        (isCarryOver &&
           normalizeSection(student.section) === normalizeSection(section.name));
       if (!matches) {
         throw new NotFoundException('الطالب غير موجود ضمن نطاق موادك');
@@ -390,7 +433,7 @@ export class FollowupService {
 
     if (filters.stage) {
       const stage = requireAcademicStage(filters.stage);
-      if (student.stage !== stage) {
+      if (student.stage !== stage && !isCarryOver) {
         throw new NotFoundException('الطالب غير موجود ضمن نطاق موادك');
       }
     }

@@ -601,11 +601,17 @@ export class LectureService {
       // still covers the stage rows.
       const initialCandidates = await tx.student.findMany({
         where: { deletedAt: null, stage, studyPeriod },
+        include: { sectionRef: { select: { name: true } } },
         orderBy: [{ orderIndex: 'asc' }, { studentCode: 'asc' }],
       });
 
       // Filter repeating students and include carry-over students based on course enrollment
       let candidates = initialCandidates;
+      const carryOverIds = new Set<string>();
+      // Sections the college actually schedules for this course. A carry-over
+      // student is only pinned to a section when the schedule runs one that
+      // matches his own section number.
+      const courseSectionKeys = new Set<string>();
       if (lecture.courseId) {
         const customSettings = await tx.systemSetting.findMany({
           where: { key: { startsWith: 'STUDENT_COURSES_' } },
@@ -640,6 +646,17 @@ export class LectureService {
 
         // Carry-over students from other stages taking this course
         if (carryOverStudentIds.length > 0) {
+          for (const studentId of carryOverStudentIds) carryOverIds.add(studentId);
+
+          const courseTimetable = await tx.timetableEntry.findMany({
+            where: { courseId: lecture.courseId },
+            select: { section: { select: { name: true } } },
+          });
+          for (const row of courseTimetable) {
+            const key = normalizeSection(row.section.name);
+            if (key) courseSectionKeys.add(key);
+          }
+
           const existingIds = new Set(candidates.map((c) => c.id));
           const neededIds = carryOverStudentIds.filter((cid) => !existingIds.has(cid));
           if (neededIds.length > 0) {
@@ -649,6 +666,7 @@ export class LectureService {
                 deletedAt: null,
                 studyPeriod,
               },
+              include: { sectionRef: { select: { name: true } } },
             });
             candidates = candidates.concat(carryOverStudents);
           }
@@ -676,13 +694,24 @@ export class LectureService {
               return true;
             }
             // Legacy rows without sectionId still carry the text mirror.
-            const key = normalizeSection(student.section);
+            const key =
+              normalizeSection(student.section) ||
+              normalizeSection(student.sectionRef?.name);
             if (Boolean(key) && sectionNames.includes(key)) {
               return true;
             }
             // If already attended (e.g. cross-section or carry-over attendee)
             if (attendedStudentIds.has(student.id)) {
               return true;
+            }
+            // A carry-over student taking a lower-stage course must be counted
+            // in that course's lectures even when his own section differs. If
+            // the college schedule runs a section matching his section number
+            // he is only counted there (presence in a parallel session covers
+            // him); otherwise he has no designated section and every lecture
+            // of the course must record his absence.
+            if (carryOverIds.has(student.id)) {
+              return !key || !courseSectionKeys.has(key);
             }
             return false;
           })
@@ -710,66 +739,68 @@ export class LectureService {
           ...new Set(missing.map((student) => student.sectionId).filter(Boolean)),
         ] as string[];
 
-        if (studentSectionIds.length > 0) {
-          // Only students whose section runs this course may ride on a
-          // parallel session of it.
-          const timetabled = await tx.timetableEntry.findMany({
-            where: {
-              courseId: lecture.courseId,
-              sectionId: { in: studentSectionIds },
-            },
-            select: { sectionId: true },
-          });
-          const timetabledSections = new Set(
-            timetabled.map((row) => row.sectionId),
-          );
-
-          if (timetabledSections.size > 0) {
-            const candidates = missing.filter(
-              (student) =>
-                student.sectionId && timetabledSections.has(student.sectionId),
-            );
-            if (candidates.length > 0) {
-              const weekKey = isoWeekKey(new Date());
-              const elsewhere = await tx.attendanceRecord.findMany({
+        // Only students whose section runs this course may ride on a parallel
+        // session of it. A carry-over student has no timetable row of his own
+        // in the lower-stage course, so any present record for that course in
+        // the same week counts as coverage for him.
+        const timetabled =
+          studentSectionIds.length > 0
+            ? await tx.timetableEntry.findMany({
                 where: {
-                  status: 'PRESENT',
-                  studentId: { in: candidates.map((student) => student.id) },
-                  lecture: {
-                    courseId: lecture.courseId,
-                    id: { not: id },
-                    deletedAt: null,
-                  },
+                  courseId: lecture.courseId,
+                  sectionId: { in: studentSectionIds },
                 },
+                select: { sectionId: true },
+              })
+            : [];
+        const timetabledSections = new Set(
+          timetabled.map((row) => row.sectionId),
+        );
+
+        const candidates = missing.filter(
+          (student) =>
+            carryOverIds.has(student.id) ||
+            (student.sectionId && timetabledSections.has(student.sectionId)),
+        );
+        if (candidates.length > 0) {
+          const weekKey = isoWeekKey(new Date());
+          const elsewhere = await tx.attendanceRecord.findMany({
+            where: {
+              status: 'PRESENT',
+              studentId: { in: candidates.map((student) => student.id) },
+              lecture: {
+                courseId: lecture.courseId,
+                id: { not: id },
+                deletedAt: null,
+              },
+            },
+            select: {
+              studentId: true,
+              lecture: {
                 select: {
-                  studentId: true,
-                  lecture: {
-                    select: {
-                      name: true,
-                      closedAt: true,
-                      createdAt: true,
-                      lectureSections: {
-                        select: { section: { select: { name: true } } },
-                        orderBy: { sectionId: 'asc' },
-                        take: 1,
-                      },
-                      sectionRef: { select: { name: true } },
-                    },
+                  name: true,
+                  closedAt: true,
+                  createdAt: true,
+                  lectureSections: {
+                    select: { section: { select: { name: true } } },
+                    orderBy: { sectionId: 'asc' },
+                    take: 1,
                   },
+                  sectionRef: { select: { name: true } },
                 },
-              });
-              for (const row of elsewhere) {
-                if (!row.studentId) continue;
-                const when = row.lecture.closedAt ?? row.lecture.createdAt;
-                if (isoWeekKey(when) !== weekKey) continue;
-                if (!coveredElsewhere.has(row.studentId)) {
-                  const label =
-                    row.lecture.lectureSections?.[0]?.section?.name ||
-                    row.lecture.sectionRef?.name ||
-                    row.lecture.name;
-                  coveredElsewhere.set(row.studentId, label);
-                }
-              }
+              },
+            },
+          });
+          for (const row of elsewhere) {
+            if (!row.studentId) continue;
+            const when = row.lecture.closedAt ?? row.lecture.createdAt;
+            if (isoWeekKey(when) !== weekKey) continue;
+            if (!coveredElsewhere.has(row.studentId)) {
+              const label =
+                row.lecture.lectureSections?.[0]?.section?.name ||
+                row.lecture.sectionRef?.name ||
+                row.lecture.name;
+              coveredElsewhere.set(row.studentId, label);
             }
           }
         }

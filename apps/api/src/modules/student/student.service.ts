@@ -228,6 +228,9 @@ export class StudentService {
                 status: true,
                 startedAt: true,
                 courseId: true,
+                // The stage of the lecture's course lets the students page show
+                // per-stage counters for a carry-over student.
+                course: { select: { stage: true } },
               },
             },
           },
@@ -254,6 +257,21 @@ export class StudentService {
       } catch {}
     }
 
+    // Stages of the courses a student is explicitly required to take, so the
+    // stage filter can show a carry-over student with the lower stage too.
+    const requiredCourseIds = new Set<string>();
+    for (const enrollment of enrollmentMap.values()) {
+      for (const courseId of enrollment.courseIds) requiredCourseIds.add(courseId);
+    }
+    const requiredCourses =
+      requiredCourseIds.size > 0
+        ? await this.prisma.course.findMany({
+            where: { id: { in: [...requiredCourseIds] } },
+            select: { id: true, stage: true },
+          })
+        : [];
+    const courseStageById = new Map(requiredCourses.map((course) => [course.id, course.stage]));
+
     return students.map((student, idx) => {
       // Attendance records are the only source of truth: active lectures are
       // excluded above, and stale stored counters are never used as a fallback.
@@ -261,6 +279,13 @@ export class StudentService {
       const totalAbsent = student.attendances.filter((a) => a.status === 'ABSENT').length;
       const totalSessions = totalPresent + totalAbsent;
       const custom = enrollmentMap.get(student.id);
+      const customCourseStages = Array.from(
+        new Set(
+          (custom?.courseIds || [])
+            .map((courseId) => courseStageById.get(courseId))
+            .filter((stage): stage is number => typeof stage === 'number'),
+        ),
+      );
 
       return {
         id: student.id,
@@ -277,6 +302,7 @@ export class StudentService {
         totalLectures: totalSessions,
         academicStatus: custom?.academicStatus || 'REGULAR',
         customCourseCount: custom?.courseIds?.length ?? null,
+        customCourseStages,
         isCustomEnrollment: Boolean(custom && custom.academicStatus !== 'REGULAR'),
         enrollmentNotes: custom?.notes || null,
         createdAt: student.createdAt,
@@ -285,6 +311,7 @@ export class StudentService {
           lectureId: a.lecture.id,
           lectureName: a.lecture.name,
           courseId: a.lecture.courseId,
+          courseStage: a.lecture.course?.stage ?? null,
           lectureDate: a.lecture.startedAt,
           status: a.status,
           registeredAt: a.registeredAt,

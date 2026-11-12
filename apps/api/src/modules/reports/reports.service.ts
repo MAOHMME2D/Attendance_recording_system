@@ -472,25 +472,79 @@ export class ReportsService {
     };
   }
 
+  /** Students required to take a course of the selected stage (or scope). */
+  private async carryOverStudentIdsForStage(
+    stage: number | null,
+    scope: ReportScope,
+  ): Promise<string[]> {
+    // An admin with no stage filter already sees every student.
+    if (stage == null && scope.isAdmin) return [];
+    const courses = await this.prisma.course.findMany({
+      where: stage != null ? { stage } : { id: { in: scope.courseIds } },
+      select: { id: true },
+    });
+    if (courses.length === 0) return [];
+    const courseIds = new Set(courses.map((course) => course.id));
+
+    const settings = await this.prisma.systemSetting.findMany({
+      where: { key: { startsWith: 'STUDENT_COURSES_' } },
+    });
+    const ids: string[] = [];
+    for (const setting of settings) {
+      try {
+        const parsed = JSON.parse(setting.value);
+        if (
+          parsed &&
+          parsed.academicStatus !== 'REGULAR' &&
+          Array.isArray(parsed.courseIds) &&
+          parsed.courseIds.some((courseId: string) => courseIds.has(courseId))
+        ) {
+          ids.push(setting.key.replace('STUDENT_COURSES_', ''));
+        }
+      } catch {}
+    }
+    return ids;
+  }
+
   private async studentScopeWhere(user: AuthenticatedUser, filters: ReportFilters) {
     const scope = await this.resolveScope(user);
     const stage = await this.scopedStage(user, filters.stage);
     const section = await this.scopedSection(user, filters.sectionId);
+    const carryOverIds = await this.carryOverStudentIdsForStage(stage, scope);
+
     const where: any = { deletedAt: null };
-    if (stage != null) where.stage = stage;
-    else if (!scope.isAdmin) where.stage = { in: scope.stages };
-    if (section) {
-      where.AND = [
-        {
-          OR: [
-            { sectionId: section.id },
-            { sectionId: null, section: section.name },
-          ],
-        },
-      ];
+    const and: any[] = [];
+
+    const stageCondition: any =
+      stage != null
+        ? { stage }
+        : !scope.isAdmin
+          ? { stage: { in: scope.stages } }
+          : null;
+    if (stageCondition) {
+      and.push(
+        carryOverIds.length > 0
+          ? { OR: [stageCondition, { id: { in: carryOverIds } }] }
+          : stageCondition,
+      );
     }
+
+    if (section) {
+      const matches: any[] = [
+        { sectionId: section.id },
+        { sectionId: null, section: section.name },
+      ];
+      // Cross-stage sections share a number but not a row.
+      if (carryOverIds.length > 0) {
+        matches.push({ id: { in: carryOverIds }, section: section.name });
+      }
+      and.push({ OR: matches });
+    }
+
     const search = this.studentSearchWhere(filters.search);
-    if ('OR' in search) where.AND = [...(where.AND || []), search];
+    if ('OR' in search) and.push(search);
+
+    if (and.length > 0) where.AND = and;
     return where;
   }
 

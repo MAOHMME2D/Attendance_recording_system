@@ -339,6 +339,7 @@ export interface StudentHistoryItem {
   lectureId: string;
   lectureName: string;
   courseId?: string | null;
+  courseStage?: number | null;
   lectureDate: string;
   status: string;
   registeredAt: string;
@@ -379,6 +380,7 @@ export interface StudentListItem {
   totalLectures: number;
   academicStatus?: AcademicStatus;
   customCourseCount?: number | null;
+  customCourseStages?: number[];
   isCustomEnrollment?: boolean;
   enrollmentNotes?: string | null;
   createdAt: string;
