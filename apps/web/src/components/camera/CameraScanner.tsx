@@ -5,6 +5,15 @@ import { Html5Qrcode, Html5QrcodeSupportedFormats } from 'html5-qrcode';
 import { attendanceApi } from '@/lib/api';
 import { playScanSuccess, playScanDuplicate, playScanError } from '@/lib/sounds';
 import { getCameraErrorMessage, getCameraListErrorMessage, CAMERA_ERROR_MESSAGES } from '@/lib/camera-errors';
+import {
+  buildVideoConstraints,
+  getCameraPermissionState,
+  isFatalCameraError,
+  listVideoInputDevices,
+  orderCameraCandidates,
+  pickPreferredCamera,
+  type CameraDevice,
+} from '@/lib/camera-devices';
 
 interface CameraScannerProps {
   lectureId: string;
@@ -30,10 +39,34 @@ export function CameraScanner({
   const mediaStreamRef = useRef<MediaStream | null>(null);
 
   const [isScanning, setIsScanning] = useState(false);
-  const [cameras, setCameras] = useState<Array<{ id: string; label: string }>>([]);
+  const [cameras, setCameras] = useState<CameraDevice[]>([]);
   const [selectedCameraId, setSelectedCameraId] = useState<string>('');
   const [cameraError, setCameraError] = useState<string | null>(null);
+  const [cameraNotice, setCameraNotice] = useState<string | null>(null);
+  const [camerasLoading, setCamerasLoading] = useState(false);
   const [zoomLevel, setZoomLevel] = useState<number>(1);
+
+  // Camera state kept in refs so async callbacks never capture stale values.
+  const camerasRef = useRef<CameraDevice[]>([]);
+  const selectedCameraIdRef = useRef('');
+  selectedCameraIdRef.current = selectedCameraId;
+  const isActiveRef = useRef(isActive);
+  isActiveRef.current = isActive;
+  const zoomLevelRef = useRef(1);
+  const mountedRef = useRef(true);
+  const hasEnumeratedRef = useRef(false);
+  const refreshInFlightRef = useRef(false);
+  const refreshCamerasRef = useRef<
+    ((options?: { autoStart?: boolean }) => Promise<void>) | null
+  >(null);
+  const stopCameraRef = useRef<(() => Promise<void>) | null>(null);
+  // Last failure from the enumeration step, so "تشغيل" can report why there
+  // are no cameras in the list (e.g. permission denied) instead of the
+  // misleading generic "no camera attached".
+  const lastListErrorRef = useRef<unknown>(null);
+  // Incremented on every start/stop cycle so late async results from a previous
+  // camera attempt are discarded instead of fighting the new one.
+  const cameraSessionRef = useRef(0);
 
   // Subtle border flash feedback (WITHOUT covering or blocking the camera view)
   const [scanFlash, setScanFlash] = useState<'success' | 'duplicate' | 'error' | null>(null);
@@ -61,6 +94,7 @@ export function CameraScanner({
 
   // Hardware or digital zoom
   const applyZoom = useCallback(async (zoom: number) => {
+    zoomLevelRef.current = zoom;
     setZoomLevel(zoom);
     if (mediaStreamRef.current) {
       const videoTrack = mediaStreamRef.current.getVideoTracks()[0];
@@ -166,143 +200,339 @@ export function CameraScanner({
     }
   }, []);
 
-  // Fetch available cameras once on mount
-  useEffect(() => {
-    let mounted = true;
-    Html5Qrcode.getCameras()
-      .then((devices) => {
-        if (!mounted) return;
-        if (devices && devices.length > 0) {
-          setCameras(devices);
-          const preferred = devices.find((d) => /hd|wide|webcam/i.test(d.label)) || devices[0];
-          setSelectedCameraId(preferred.id);
-        } else {
-          setCameraError(CAMERA_ERROR_MESSAGES.NO_CAMERA);
-        }
-      })
-      .catch((err) => {
-        if (!mounted) return;
-        console.error('Error fetching cameras:', err);
-        setCameraError(getCameraListErrorMessage(err, null));
-      });
-
-    return () => {
-      mounted = false;
-    };
-  }, []);
-
   // Start Camera - Stable, does not restart on re-renders
-  const startCamera = useCallback(async () => {
-    if (!selectedCameraId) return;
+  const startCamera = useCallback(
+    async (deviceIdOverride?: string) => {
+      if (!isActiveRef.current) return;
 
-    if (html5QrCodeRef.current && html5QrCodeRef.current.isScanning) {
-      return;
-    }
+      // Already live: never tear down a working stream.
+      if (html5QrCodeRef.current?.isScanning) return;
 
-    try {
+      const attached = camerasRef.current;
+      if (attached.length === 0) {
+        // Enumeration may still be in progress; only report when it finished.
+        if (!refreshInFlightRef.current) {
+          const listError = lastListErrorRef.current;
+          setCameraError(
+            listError
+              ? getCameraErrorMessage(listError)
+              : CAMERA_ERROR_MESSAGES.NO_CAMERA,
+          );
+          setIsScanning(false);
+        }
+        return;
+      }
+
+      const session = ++cameraSessionRef.current;
       setCameraError(null);
+      setCameraNotice(null);
 
-      // Clean up previous instance if any
-      if (html5QrCodeRef.current) {
+      const requestedId =
+        deviceIdOverride || selectedCameraIdRef.current || attached[0]?.id || '';
+      const candidates = orderCameraCandidates(attached, requestedId);
+
+      // Remove a previous stopped or half-started instance.
+      const previous = html5QrCodeRef.current;
+      html5QrCodeRef.current = null;
+      mediaStreamRef.current = null;
+      if (previous) {
         try {
-          await html5QrCodeRef.current.stop();
+          if (previous.isScanning) await previous.stop();
+        } catch {
+          // ignore
+        }
+        try {
+          await previous.clear();
         } catch {
           // ignore
         }
       }
 
-      const html5QrCode = new Html5Qrcode(containerId, {
-        formatsToSupport: [
-          Html5QrcodeSupportedFormats.QR_CODE,
-          Html5QrcodeSupportedFormats.CODE_128,
-          Html5QrcodeSupportedFormats.CODE_39,
-          Html5QrcodeSupportedFormats.EAN_13,
-          Html5QrcodeSupportedFormats.EAN_8,
-          Html5QrcodeSupportedFormats.UPC_A,
-          Html5QrcodeSupportedFormats.UPC_E,
-        ],
-        verbose: false,
-        experimentalFeatures: {
-          useBarCodeDetectorIfSupported: true,
-        },
-      });
-      html5QrCodeRef.current = html5QrCode;
+      let lastError: unknown = null;
 
-      // Scan full area for lightning fast detection at any angle and distance
-      const config = {
-        fps: 30, // 30 FPS for instant responsiveness
-        qrbox: (viewfinderWidth: number, viewfinderHeight: number) => {
-          // html5-qrcode throws when a dimension is < 50px. Clamp so the
-          // viewfinder never fails on narrow/never-sized containers.
-          return {
-            width: Math.max(50, Math.floor(viewfinderWidth * 0.96)),
-            height: Math.max(50, Math.floor(viewfinderHeight * 0.96)),
+      for (const camera of candidates) {
+        if (session !== cameraSessionRef.current) return;
+
+        try {
+          const html5QrCode = new Html5Qrcode(containerId, {
+            formatsToSupport: [
+              Html5QrcodeSupportedFormats.QR_CODE,
+              Html5QrcodeSupportedFormats.CODE_128,
+              Html5QrcodeSupportedFormats.CODE_39,
+              Html5QrcodeSupportedFormats.EAN_13,
+              Html5QrcodeSupportedFormats.EAN_8,
+              Html5QrcodeSupportedFormats.UPC_A,
+              Html5QrcodeSupportedFormats.UPC_E,
+            ],
+            verbose: false,
+            experimentalFeatures: {
+              useBarCodeDetectorIfSupported: true,
+            },
+          });
+          html5QrCodeRef.current = html5QrCode;
+
+          const config = {
+            fps: 30, // 30 FPS for instant responsiveness
+            qrbox: (viewfinderWidth: number, viewfinderHeight: number) => {
+              // html5-qrcode throws when a dimension is < 50px. Clamp so the
+              // viewfinder never fails on narrow/never-sized containers.
+              return {
+                width: Math.max(50, Math.floor(viewfinderWidth * 0.96)),
+                height: Math.max(50, Math.floor(viewfinderHeight * 0.96)),
+              };
+            },
+            aspectRatio: 1.777778,
+            // html5-qrcode replaces the deviceId argument with these
+            // constraints, so the camera id must live here. Only `ideal`
+            // values are used: `min` throws OverconstrainedError on cameras
+            // that cannot deliver 1280x720 (front, virtual, low-end).
+            videoConstraints: buildVideoConstraints(camera.id),
           };
-        },
-        aspectRatio: 1.777778,
-        videoConstraints: {
-          deviceId: { exact: selectedCameraId },
-          width: { ideal: 1920, min: 1280 },
-          height: { ideal: 1080, min: 720 },
-        } as any,
-      };
 
-      await html5QrCode.start(
-        selectedCameraId,
-        config,
-        (decodedText) => handleScanSuccess(decodedText),
-        () => {}, // silent on non-detection frame
-      );
+          await html5QrCode.start(
+            camera.id,
+            config,
+            (decodedText) => handleScanSuccess(decodedText),
+            () => {}, // silent on non-detection frame
+          );
 
-      try {
-        const videoElem = document.querySelector(`#${containerId} video`) as HTMLVideoElement | null;
-        if (videoElem && videoElem.srcObject) {
-          mediaStreamRef.current = videoElem.srcObject as MediaStream;
+          // A stop/switch happened while getUserMedia was resolving.
+          if (session !== cameraSessionRef.current) {
+            try {
+              await html5QrCode.stop();
+            } catch {
+              // ignore
+            }
+            try {
+              await html5QrCode.clear();
+            } catch {
+              // ignore
+            }
+            return;
+          }
+
+          try {
+            const videoElem = document.querySelector(
+              `#${containerId} video`,
+            ) as HTMLVideoElement | null;
+            if (videoElem && videoElem.srcObject) {
+              const stream = videoElem.srcObject as MediaStream;
+              mediaStreamRef.current = stream;
+              const track = stream.getVideoTracks()[0];
+              track?.addEventListener(
+                'ended',
+                () => {
+                  if (session !== cameraSessionRef.current) return;
+                  // Camera unplugged or claimed by another app: drop it and
+                  // move to the next attached camera.
+                  void (async () => {
+                    await stopCameraRef.current?.();
+                    await refreshCamerasRef.current?.({ autoStart: true });
+                  })();
+                },
+                { once: true },
+              );
+            }
+          } catch {
+            // ignore
+          }
+
+          selectedCameraIdRef.current = camera.id;
+          setSelectedCameraId(camera.id);
+
+          if (requestedId && camera.id !== requestedId) {
+            const label = camera.label || 'كاميرا أخرى';
+            setCameraNotice(
+              `تعذر تشغيل الكاميرا المحددة، فتم تشغيل «${label}» تلقائياً.`,
+            );
+          }
+
+          setIsScanning(true);
+          applyZoom(zoomLevelRef.current);
+          return;
+        } catch (err) {
+          lastError = err;
+          const failed = html5QrCodeRef.current;
+          html5QrCodeRef.current = null;
+          if (failed) {
+            try {
+              if (failed.isScanning) await failed.stop();
+            } catch {
+              // ignore
+            }
+            try {
+              await failed.clear();
+            } catch {
+              // ignore
+            }
+          }
+
+          // Permission / HTTPS problems cannot be fixed by another camera.
+          if (isFatalCameraError(err)) break;
         }
-      } catch {
-        // ignore
       }
 
-      setIsScanning(true);
-      applyZoom(zoomLevel);
-    } catch (err: any) {
-      console.error('Failed to start camera:', err);
-      setCameraError(getCameraErrorMessage(err));
+      if (session !== cameraSessionRef.current) return;
+      console.error('Failed to start camera:', lastError);
       setIsScanning(false);
-    }
-  }, [selectedCameraId, handleScanSuccess, applyZoom, zoomLevel]);
+      setCameraError(getCameraErrorMessage(lastError));
+    },
+    [handleScanSuccess, applyZoom],
+  );
 
   // Stop Camera
   const stopCamera = useCallback(async () => {
-    if (html5QrCodeRef.current) {
-      try {
-        if (html5QrCodeRef.current.isScanning) {
-          await html5QrCodeRef.current.stop();
-        }
-        await html5QrCodeRef.current.clear();
-      } catch (err) {
-        console.error('Failed to stop camera:', err);
-      }
-      html5QrCodeRef.current = null;
-      mediaStreamRef.current = null;
-      setIsScanning(false);
+    cameraSessionRef.current += 1;
+    const scanner = html5QrCodeRef.current;
+    html5QrCodeRef.current = null;
+    mediaStreamRef.current = null;
+    setIsScanning(false);
+
+    if (!scanner) return;
+    try {
+      if (scanner.isScanning) await scanner.stop();
+    } catch (err) {
+      console.error('Failed to stop camera:', err);
+    }
+    try {
+      await scanner.clear();
+    } catch {
+      // ignore
     }
   }, []);
 
-  // Effect to manage camera lifecycle ONLY when isActive or selectedCameraId changes
+  stopCameraRef.current = stopCamera;
+
+  // Re-enumerate every attached camera. Requests permission only when the
+  // browser has not granted it yet, so device labels are populated.
+  const refreshCameras = useCallback(
+    async (options?: { autoStart?: boolean }) => {
+      if (refreshInFlightRef.current) return;
+      refreshInFlightRef.current = true;
+      if (mountedRef.current) setCamerasLoading(true);
+
+      try {
+        const mediaDevices =
+          typeof navigator !== 'undefined' ? navigator.mediaDevices : null;
+        const permissions =
+          typeof navigator !== 'undefined' ? navigator.permissions : null;
+        const permissionState = await getCameraPermissionState(permissions);
+
+        const found = await listVideoInputDevices(mediaDevices, {
+          requestPermission: permissionState !== 'granted',
+          permissionState,
+        });
+
+        if (!mountedRef.current) return;
+
+        const wasRunning = Boolean(html5QrCodeRef.current?.isScanning);
+        const shouldAutoStart =
+          options?.autoStart === true || !hasEnumeratedRef.current || wasRunning;
+
+        hasEnumeratedRef.current = true;
+        camerasRef.current = found;
+        setCameras(found);
+        lastListErrorRef.current = null;
+
+        if (found.length === 0) {
+          setCameraError(CAMERA_ERROR_MESSAGES.NO_CAMERA);
+          await stopCamera();
+          return;
+        }
+
+        setCameraError(null);
+
+        const previousId = selectedCameraIdRef.current;
+        const previousStillAttached = found.some(
+          (camera) => camera.id === previousId,
+        );
+        const preferred = pickPreferredCamera(found, previousId);
+
+        if (preferred && preferred.id !== previousId) {
+          selectedCameraIdRef.current = preferred.id;
+          setSelectedCameraId(preferred.id);
+        }
+
+        if (!isActiveRef.current || !shouldAutoStart) return;
+
+        // The running camera was unplugged: drop the dead stream first.
+        if (!previousStillAttached && html5QrCodeRef.current) {
+          await stopCamera();
+        }
+
+        await startCamera(preferred?.id);
+      } catch (err) {
+        if (!mountedRef.current) return;
+        console.error('Error fetching cameras:', err);
+        lastListErrorRef.current = err;
+        setCameraError(getCameraListErrorMessage(err, null));
+        setIsScanning(false);
+      } finally {
+        refreshInFlightRef.current = false;
+        if (mountedRef.current) setCamerasLoading(false);
+      }
+    },
+    [startCamera, stopCamera],
+  );
+
+  refreshCamerasRef.current = refreshCameras;
+
+  // Camera selection from the header dropdown: explicit restart.
+  const handleCameraChange = useCallback(
+    async (cameraId: string) => {
+      selectedCameraIdRef.current = cameraId;
+      setSelectedCameraId(cameraId);
+      setCameraNotice(null);
+      await stopCamera();
+      await startCamera(cameraId);
+    },
+    [startCamera, stopCamera],
+  );
+
+  // Enumerate cameras once on mount (asks for permission only when needed).
   useEffect(() => {
-    if (isActive && selectedCameraId) {
-      startCamera();
+    mountedRef.current = true;
+    void refreshCameras();
+    return () => {
+      mountedRef.current = false;
+    };
+  }, [refreshCameras]);
+
+  // React to cameras being plugged in / removed while the page is open.
+  useEffect(() => {
+    const mediaDevices =
+      typeof navigator !== 'undefined' ? navigator.mediaDevices : null;
+    if (!mediaDevices?.addEventListener) return;
+
+    const handleDeviceChange = () => {
+      void refreshCamerasRef.current?.();
+    };
+
+    mediaDevices.addEventListener('devicechange', handleDeviceChange);
+    return () => mediaDevices.removeEventListener('devicechange', handleDeviceChange);
+  }, []);
+
+  // Start/stop with the lecture lifecycle only. Zoom and camera-selection
+  // changes never restart a healthy stream.
+  useEffect(() => {
+    if (isActive) {
+      void startCamera();
     } else {
-      stopCamera();
+      void stopCamera();
     }
 
     return () => {
-      stopCamera();
+      void stopCamera();
+    };
+  }, [isActive, startCamera, stopCamera]);
+
+  // Clear feedback timers on unmount.
+  useEffect(() => {
+    return () => {
       if (flashTimeoutRef.current) clearTimeout(flashTimeoutRef.current);
       if (scanInfoTimeoutRef.current) clearTimeout(scanInfoTimeoutRef.current);
     };
-  }, [isActive, selectedCameraId, startCamera, stopCamera]);
+  }, []);
 
   return (
     <div
@@ -415,10 +645,12 @@ export function CameraScanner({
             ))}
           </div>
 
-          {cameras.length > 1 && (
+          {cameras.length > 0 && (
             <select
               value={selectedCameraId}
-              onChange={(e) => setSelectedCameraId(e.target.value)}
+              onChange={(e) => void handleCameraChange(e.target.value)}
+              disabled={!isActive || camerasLoading}
+              title="اختيار الكاميرا"
               style={{
                 fontSize: '12px',
                 padding: '4px 8px',
@@ -426,12 +658,14 @@ export function CameraScanner({
                 color: '#FFFFFF',
                 borderRadius: '6px',
                 border: '1px solid #374151',
-                maxWidth: '150px',
+                maxWidth: '170px',
+                cursor: !isActive || camerasLoading ? 'not-allowed' : 'pointer',
+                opacity: !isActive ? 0.6 : 1,
               }}
             >
-              {cameras.map((cam) => (
+              {cameras.map((cam, index) => (
                 <option key={cam.id} value={cam.id}>
-                  {cam.label || `كاميرا ${cam.id.slice(0, 5)}`}
+                  {cam.label || `كاميرا ${index + 1}`}
                 </option>
               ))}
             </select>
@@ -439,7 +673,31 @@ export function CameraScanner({
 
           <button
             type="button"
-            onClick={isScanning ? stopCamera : startCamera}
+            onClick={() => void refreshCameras()}
+            disabled={camerasLoading}
+            title="تحديث قائمة الكاميرات"
+            aria-label="تحديث قائمة الكاميرات"
+            style={{
+              padding: '4px 9px',
+              fontSize: '13px',
+              fontWeight: '700',
+              lineHeight: 1.2,
+              borderRadius: '6px',
+              border: '1px solid rgba(255, 255, 255, 0.12)',
+              background: 'rgba(255, 255, 255, 0.06)',
+              color: camerasLoading ? '#6B7280' : '#E5E7EB',
+              cursor: camerasLoading ? 'wait' : 'pointer',
+            }}
+          >
+            {camerasLoading ? '…' : '↻'}
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              if (isScanning) void stopCamera();
+              else void startCamera();
+            }}
             disabled={!isActive}
             style={{
               padding: '5px 12px',
@@ -642,7 +900,7 @@ export function CameraScanner({
             {isActive && (
               <button
                 type="button"
-                onClick={startCamera}
+                onClick={() => void startCamera()}
                 className="btn btn-primary"
                 style={{ padding: '8px 22px', fontSize: '13px' }}
               >
@@ -672,25 +930,79 @@ export function CameraScanner({
               justifyContent: 'space-between',
             }}
           >
-            <span>{cameraError}</span>
-            <button
-              onClick={startCamera}
-              style={{
-                fontSize: '11px',
-                background: '#991B1B',
-                border: 'none',
-                color: '#FFFFFF',
-                fontWeight: '700',
-                padding: '4px 10px',
-                borderRadius: '6px',
-                cursor: 'pointer',
-              }}
-            >
-              إعادة المحاولة
-            </button>
+            <span style={{ flex: 1, lineHeight: 1.6 }}>{cameraError}</span>
+            <div style={{ display: 'flex', gap: '6px', flexShrink: 0 }}>
+              <button
+                type="button"
+                onClick={() => void refreshCameras()}
+                disabled={camerasLoading}
+                style={{
+                  fontSize: '11px',
+                  background: '#7F1D1D',
+                  border: '1px solid #DC2626',
+                  color: '#FEE2E2',
+                  fontWeight: '700',
+                  padding: '4px 10px',
+                  borderRadius: '6px',
+                  cursor: camerasLoading ? 'wait' : 'pointer',
+                }}
+              >
+                تحديث القائمة
+              </button>
+              <button
+                type="button"
+                onClick={() => void startCamera()}
+                style={{
+                  fontSize: '11px',
+                  background: '#991B1B',
+                  border: 'none',
+                  color: '#FFFFFF',
+                  fontWeight: '700',
+                  padding: '4px 10px',
+                  borderRadius: '6px',
+                  cursor: 'pointer',
+                }}
+              >
+                إعادة المحاولة
+              </button>
+            </div>
           </div>
         )}
       </div>
+
+      {cameraNotice && (
+        <div
+          style={{
+            padding: '8px 18px',
+            background: '#FFFBEB',
+            borderTop: '1px solid #FDE68A',
+            color: '#92400E',
+            fontSize: '11.5px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: '10px',
+          }}
+        >
+          <span style={{ lineHeight: 1.6 }}>{cameraNotice}</span>
+          <button
+            type="button"
+            onClick={() => setCameraNotice(null)}
+            aria-label="إغلاق التنبيه"
+            style={{
+              border: 'none',
+              background: 'transparent',
+              color: '#92400E',
+              fontSize: '15px',
+              fontWeight: '700',
+              cursor: 'pointer',
+              lineHeight: 1,
+            }}
+          >
+            ×
+          </button>
+        </div>
+      )}
 
       {/* Subtle bottom indicator */}
       <div
