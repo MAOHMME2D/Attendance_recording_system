@@ -49,6 +49,12 @@ export class SectionController {
     return this.sectionService.update(id, body, user);
   }
 
+  @Get(':id/dependencies')
+  @RequirePermissions(PERMISSIONS.SECTIONS_VIEW)
+  async dependencies(@Param('id') id: string) {
+    return this.sectionService.dependencies(id);
+  }
+
   @Delete(':id')
   @RequirePermissions(PERMISSIONS.SECTIONS_MANAGE)
   async delete(

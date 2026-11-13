@@ -41,7 +41,6 @@ export default function ResetAbsencesModal({
     currentStudyPeriod === 'EVENING' ? 'EVENING' : 'MORNING',
   );
   const [sectionId, setSectionId] = useState<string>(currentSectionId || '');
-  const [resetType, setResetType] = useState<'ABSENCES_ONLY' | 'ALL_ATTENDANCE'>('ALL_ATTENDANCE');
   const [sections, setSections] = useState<SectionItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -104,8 +103,8 @@ export default function ResetAbsencesModal({
   const handleReset = async (e: React.FormEvent) => {
     e.preventDefault();
 
-    if (confirmText.trim() !== 'تأكيد') {
-      setError('يرجى كتابة كلمة "تأكيد" في الحقل لتأكيد العملية');
+    if (confirmText.trim() !== 'تاكيد') {
+      setError('يرجى كتابة كلمة "تاكيد" في الحقل');
       return;
     }
 
@@ -125,7 +124,9 @@ export default function ResetAbsencesModal({
         resetType: 'ABSENCES_ONLY' | 'ALL_ATTENDANCE';
       } = {
         stage,
-        resetType,
+        // A semester reset always starts attendance from zero: present,
+        // absent and the total lectures counter are all cleared together.
+        resetType: 'ALL_ATTENDANCE',
       };
 
       if (scope === 'PERIOD' || scope === 'SECTION') {
@@ -205,10 +206,10 @@ export default function ResetAbsencesModal({
             </div>
             <div>
               <h3 style={{ margin: 0, fontSize: '18px', fontWeight: 'bold', color: '#991B1B' }}>
-                تصفير سجلات الكورس
+                تصفير سجلات الفصل الدراسي
               </h3>
               <p style={{ margin: 0, fontSize: '12px', color: '#6B7280' }}>
-                بداية نظيفة لكورس جديد: مسح الحضور والغياب والإجمالي والسجل
+                بداية فصل دراسي جديد: مسح الحضور والغياب والإجمالي والسجل للمرحلة المحددة
               </p>
             </div>
           </div>
@@ -407,74 +408,6 @@ export default function ResetAbsencesModal({
             <strong>سيتم التصفير ضمن:</strong> {scopeSummary}
           </div>
 
-          {/* Reset Type */}
-          <div style={{ marginBottom: '18px' }}>
-            <label style={{ display: 'block', fontSize: '13px', fontWeight: '600', color: '#374151', marginBottom: '8px' }}>
-              نوع التصفير:
-            </label>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-              <label
-                style={{
-                  display: 'flex',
-                  alignItems: 'flex-start',
-                  gap: '10px',
-                  padding: '10px 12px',
-                  borderRadius: '8px',
-                  border: resetType === 'ALL_ATTENDANCE' ? '1px solid #DC2626' : '1px solid #E5E7EB',
-                  background: resetType === 'ALL_ATTENDANCE' ? '#FEF2F2' : '#F9FAFB',
-                  cursor: 'pointer',
-                }}
-              >
-                <input
-                  type="radio"
-                  name="resetType"
-                  value="ALL_ATTENDANCE"
-                  checked={resetType === 'ALL_ATTENDANCE'}
-                  onChange={() => setResetType('ALL_ATTENDANCE')}
-                  style={{ marginTop: '3px' }}
-                />
-                <div>
-                  <strong style={{ fontSize: '13px', color: '#DC2626', display: 'block' }}>
-                    تصفير شامل لبداية الكورس الثاني (موصى به)
-                  </strong>
-                  <span style={{ fontSize: '12px', color: '#6B7280' }}>
-                    حذف جميع سجلات الحضور والغياب وإجمالي المحاضرات والسجل، والبدء من الصفر.
-                  </span>
-                </div>
-              </label>
-
-              <label
-                style={{
-                  display: 'flex',
-                  alignItems: 'flex-start',
-                  gap: '10px',
-                  padding: '10px 12px',
-                  borderRadius: '8px',
-                  border: resetType === 'ABSENCES_ONLY' ? '1px solid #DC2626' : '1px solid #E5E7EB',
-                  background: resetType === 'ABSENCES_ONLY' ? '#FEF2F2' : '#F9FAFB',
-                  cursor: 'pointer',
-                }}
-              >
-                <input
-                  type="radio"
-                  name="resetType"
-                  value="ABSENCES_ONLY"
-                  checked={resetType === 'ABSENCES_ONLY'}
-                  onChange={() => setResetType('ABSENCES_ONLY')}
-                  style={{ marginTop: '3px' }}
-                />
-                <div>
-                  <strong style={{ fontSize: '13px', color: '#111827', display: 'block' }}>
-                    تصفير الغيابات فقط
-                  </strong>
-                  <span style={{ fontSize: '12px', color: '#6B7280' }}>
-                    حذف سجلات الغياب فقط مع الحفاظ على سجلات حضور الطلاب وإجمالي المحاضرات.
-                  </span>
-                </div>
-              </label>
-            </div>
-          </div>
-
           {/* Warning Banner */}
           <div
             style={{
@@ -488,26 +421,28 @@ export default function ResetAbsencesModal({
               lineHeight: '1.6',
             }}
           >
-            ⚠️ <strong>تنبيه مهم:</strong> عملية التصفير نهائية ولا يمكن التراجع عنها. عند اختيار
-            «تصفير شامل» تُحذف سجلات الحضور والغياب وإجمالي المحاضرات وسجل الطالب ضمن النطاق
-            المحدد فقط، وتُحدَّث إحصائيات الطلاب فوراً.
+            ⚠️ <strong>تنبيه مهم:</strong> عملية التصفير نهائية ولا يمكن التراجع عنها. تُحذف
+            سجلات الحضور والغياب وإجمالي المحاضرات وسجل الطالب ضمن النطاق المحدد فقط،
+            وتُحذف كذلك المحاضرات المنتهية (المغلقة والمؤرشفة) داخل النطاق،
+            وتُحدَّث إحصائيات الطلاب فوراً، ليبدأ الفصل الدراسي الجديد من الصفر.
+            المحاضرات المفتوحة حالياً تبقى ولا تُمسّ سجلاتها.
           </div>
 
           {/* Confirmation Input */}
           <div style={{ marginBottom: '16px' }}>
             <label style={{ display: 'block', fontSize: '13px', fontWeight: '600', color: '#374151', marginBottom: '6px' }}>
-              للتأكيد، اكتب كلمة <span style={{ color: '#DC2626', fontWeight: 'bold' }}>"تأكيد"</span> أدناه:
+              للتأكيد، اكتب كلمة <span style={{ color: '#DC2626', fontWeight: 'bold' }}>"تاكيد"</span> أدناه:
             </label>
             <input
               type="text"
-              placeholder='اكتب: تأكيد'
+              placeholder='اكتب: تاكيد'
               value={confirmText}
               onChange={(e) => setConfirmText(e.target.value)}
               style={{
                 width: '100%',
                 padding: '10px 14px',
                 borderRadius: '8px',
-                border: confirmText.trim() === 'تأكيد' ? '2px solid #059669' : '1px solid #D1D5DB',
+                border: confirmText.trim() === 'تاكيد' ? '2px solid #059669' : '1px solid #D1D5DB',
                 fontSize: '14px',
                 outline: 'none',
               }}
@@ -535,16 +470,16 @@ export default function ResetAbsencesModal({
             </button>
             <button
               type="submit"
-              disabled={loading || confirmText.trim() !== 'تأكيد'}
+              disabled={loading || confirmText.trim() !== 'تاكيد'}
               style={{
                 padding: '9px 20px',
                 borderRadius: '8px',
                 border: 'none',
-                backgroundColor: confirmText.trim() === 'تأكيد' ? '#DC2626' : '#9CA3AF',
+                backgroundColor: confirmText.trim() === 'تاكيد' ? '#DC2626' : '#9CA3AF',
                 color: '#FFFFFF',
                 fontSize: '13px',
                 fontWeight: '600',
-                cursor: confirmText.trim() === 'تأكيد' && !loading ? 'pointer' : 'not-allowed',
+                cursor: confirmText.trim() === 'تاكيد' && !loading ? 'pointer' : 'not-allowed',
                 display: 'flex',
                 alignItems: 'center',
                 gap: '6px',

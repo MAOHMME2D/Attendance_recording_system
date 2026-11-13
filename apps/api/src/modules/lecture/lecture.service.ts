@@ -1131,7 +1131,12 @@ export class LectureService {
    * Archive a lecture. Attendance records are kept forever; archived lectures
    * are excluded from listings and from every statistic.
    */
-  async deleteLecture(id: string, actor: AuthenticatedUser, ipAddress?: string) {
+  async deleteLecture(
+    id: string,
+    actor: AuthenticatedUser,
+    ipAddress?: string,
+    permanent = false,
+  ) {
     const lecture = await this.prisma.lecture.findUnique({
       where: { id },
       include: { course: { select: { id: true, code: true, name: true, stage: true } } },
@@ -1145,6 +1150,50 @@ export class LectureService {
     }
 
     this.stopRotation(id);
+
+    // Permanent delete: remove the lecture and every attendance record it owns,
+    // in one transaction. This cannot be undone and preserves nothing.
+    if (permanent) {
+      const recordCount = await this.prisma.attendanceRecord.count({
+        where: { lectureId: id },
+      });
+      const affected = await this.prisma.attendanceRecord.findMany({
+        where: { lectureId: id, studentId: { not: null } },
+        select: { studentId: true },
+        distinct: ['studentId'],
+      });
+
+      await this.prisma.$transaction(async (tx) => {
+        await tx.attendanceRecord.deleteMany({ where: { lectureId: id } });
+        // LectureSection rows cascade when the lecture row is removed.
+        await tx.lecture.delete({ where: { id } });
+        await recomputeStudentStats(
+          tx,
+          affected.map((row) => row.studentId),
+        );
+      });
+
+      await this.audit.log({
+        actorUserId: actor.id,
+        action: 'LECTURE_DELETE_PERMANENT',
+        entityType: 'Lecture',
+        entityId: id,
+        details:
+          `${lecture.name} (stage ${lecture.course?.stage ?? '-'}, ` +
+          `${lecture.studyPeriod}, section ${lecture.section || 'ALL'}), ` +
+          `attendanceRecords=${recordCount}`,
+        ipAddress,
+      });
+
+      this.logger.log(
+        `Lecture permanently deleted: ${id} (records deleted: ${recordCount})`,
+      );
+      return {
+        success: true,
+        permanent: true,
+        attendanceRecords: recordCount,
+      };
+    }
 
     const affected = await this.prisma.attendanceRecord.findMany({
       where: { lectureId: id, studentId: { not: null } },

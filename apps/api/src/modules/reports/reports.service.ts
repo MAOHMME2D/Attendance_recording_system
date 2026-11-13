@@ -14,7 +14,9 @@ import { COVER_NOTE_PREFIX } from '../../common/constants/coverage';
 import type { AuthenticatedUser } from '../../common/types/authenticated-user';
 import type { ReportFilters, ReportScope, LectureScopeRow } from './report-types';
 
-const DEFAULT_ABSENCE_THRESHOLD = 3;
+// حد الغياب بالساعات: كل محاضرة = ساعة واحدة من الغياب
+// (المحاضرة الواحدة تُحتسب ساعة واحدة بغض النظر عن وقتها).
+const DEFAULT_ABSENCE_THRESHOLD = 3; // ساعات
 
 @Injectable()
 export class ReportsService {
@@ -1163,7 +1165,7 @@ export class ReportsService {
     if (raw) {
       const parsed = Number(raw);
       if (!Number.isFinite(parsed) || parsed < 1 || parsed > 50) {
-        throw new BadRequestException('حد الغياب غير صالح (1–50)');
+        throw new BadRequestException('حد الغياب غير صالح (1–50 ساعة)');
       }
       return { threshold: Math.floor(parsed), source: 'param' as const };
     }
@@ -1204,10 +1206,12 @@ export class ReportsService {
       .map((row) => {
         const entry = stats.get(row.id) || { present: 0, absent: 0 };
         const summary = this.summarize(entry.present, entry.absent);
+        // كل محاضرة تُحتسب ساعة واحدة من الغياب.
+        const absentHours = entry.absent;
         const status =
-          entry.absent >= threshold
+          absentHours >= threshold
             ? ('EXCEEDED' as const)
-            : entry.absent === threshold - 1
+            : absentHours === threshold - 1
               ? ('WARNING' as const)
               : null;
         return {
@@ -1221,6 +1225,8 @@ export class ReportsService {
           sectionLabel: row.sectionRef?.label || row.sectionRef?.name || row.section || null,
           absentCount: entry.absent,
           presentCount: entry.present,
+          absentHours,
+          presentHours: entry.present,
           status,
           ...summary,
         };
@@ -1236,6 +1242,7 @@ export class ReportsService {
     return {
       threshold,
       thresholdSource: source,
+      unit: 'hours' as const,
       exceeded: items.filter((item) => item.status === 'EXCEEDED').length,
       warning: items.filter((item) => item.status === 'WARNING').length,
       items: items.slice((page - 1) * pageSize, page * pageSize),

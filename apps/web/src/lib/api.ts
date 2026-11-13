@@ -302,8 +302,11 @@ export const lectureApi = {
   close: (id: string) =>
     apiFetch<any>(`/lectures/${id}/close`, { method: 'PATCH' }),
 
-  delete: (id: string) =>
-    apiFetch<any>(`/lectures/${id}`, { method: 'DELETE' }),
+  delete: (id: string, options: { permanent?: boolean } = {}) =>
+    apiFetch<{ success: boolean; archived?: boolean; permanent?: boolean; attendanceRecords?: number }>(
+      `/lectures/${id}${options.permanent ? '?permanent=true' : ''}`,
+      { method: 'DELETE' },
+    ),
 
   validateQr: (token: string) =>
     apiFetch<any>('/lectures/validate-qr', {
@@ -564,7 +567,7 @@ export const studentApi = {
     studentId?: string;
     resetType?: 'ABSENCES_ONLY' | 'ALL_ATTENDANCE';
   }) =>
-    apiFetch<{ success: boolean; count: number; message: string }>('/students/reset-absences', {
+    apiFetch<{ success: boolean; count: number; lectures: number; message: string }>('/students/reset-absences', {
       method: 'POST',
       body: JSON.stringify(data),
     }),
@@ -605,6 +608,26 @@ export interface SectionInput {
   label?: string;
 }
 
+export interface DeleteBlocker {
+  key: string;
+  count: number;
+  label: string;
+  action: string;
+}
+
+export interface DeleteDependencies {
+  entity: 'SECTION' | 'COURSE';
+  id: string;
+  name: string;
+  label?: string | null;
+  code?: string | null;
+  stage: number;
+  studyPeriod?: string;
+  canDelete: boolean;
+  blockers: DeleteBlocker[];
+  notes: string[];
+}
+
 export const sectionApi = {
   getAll: (filters: { stage?: number | string; studyPeriod?: string } = {}) => {
     const params = new URLSearchParams();
@@ -632,6 +655,8 @@ export const sectionApi = {
     apiFetch<{ success: boolean; message: string }>(`/sections/${id}`, {
       method: 'DELETE',
     }),
+
+  dependencies: (id: string) => apiFetch<DeleteDependencies>(`/sections/${id}/dependencies`),
 };
 
 // ============ Courses ============
@@ -678,6 +703,8 @@ export const courseApi = {
 
   delete: (id: string) =>
     apiFetch<{ success: boolean }>(`/courses/${id}`, { method: 'DELETE' }),
+
+  dependencies: (id: string) => apiFetch<DeleteDependencies>(`/courses/${id}/dependencies`),
 };
 
 // ============ Teaching assignments ============
@@ -1231,4 +1258,32 @@ export const reportsApi = {
     apiFetch<ReportStagesResponse>(`/reports/stages${reportQuery(filters)}`),
   absentees: (filters: ReportFilters = {}) =>
     apiFetch<ReportAbsenteesResponse>(`/reports/absentees${reportQuery(filters)}`),
+};
+
+// ============ System-level resets (new academic year) ============
+export interface AcademicYearSummary {
+  students: number;
+  sections: number;
+  courses: number;
+  lectures: number;
+  attendanceRecords: number;
+  timetableEntries: number;
+  teachingAssignments: number;
+  enrollments: number;
+}
+
+export interface AcademicYearResetResult {
+  success: boolean;
+  deleted: AcademicYearSummary & { qrTokens: number };
+  message: string;
+}
+
+export const systemApi = {
+  academicYearSummary: () =>
+    apiFetch<AcademicYearSummary>('/system/academic-year-summary'),
+  resetAcademicYear: (confirm: string) =>
+    apiFetch<AcademicYearResetResult>('/system/reset-academic-year', {
+      method: 'POST',
+      body: JSON.stringify({ confirm }),
+    }),
 };

@@ -14,6 +14,7 @@ import { AssignmentModule } from './modules/assignment/assignment.module';
 import { FollowupModule } from './modules/followup/followup.module';
 import { TimetableModule } from './modules/timetable/timetable.module';
 import { ReportsModule } from './modules/reports/reports.module';
+import { SystemModule } from './modules/system/system.module';
 import { HealthController } from './health.controller';
 import { AuthGuard } from './common/guards/auth.guard';
 import { PermissionsGuard } from './common/guards/permissions.guard';
@@ -34,6 +35,7 @@ import { PermissionsGuard } from './common/guards/permissions.guard';
     FollowupModule,
     TimetableModule,
     ReportsModule,
+    SystemModule,
   ],
   controllers: [HealthController],
   providers: [

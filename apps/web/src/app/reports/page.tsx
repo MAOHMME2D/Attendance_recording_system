@@ -2,58 +2,33 @@
 
 import React, { useState } from 'react';
 import Navbar from '../../components/layout/Navbar';
-import DashboardTab from '../../components/reports/tabs/DashboardTab';
-import StudentsReportTab from '../../components/reports/tabs/StudentsReportTab';
-import CoursesReportTab from '../../components/reports/tabs/CoursesReportTab';
-import LecturersReportTab from '../../components/reports/tabs/LecturersReportTab';
-import SectionsStagesReportTab from '../../components/reports/tabs/SectionsStagesReportTab';
-import AbsenteesReportTab from '../../components/reports/tabs/AbsenteesReportTab';
 import LectureReportsPanel from '../../components/reports/LectureReportsPanel';
 import LecturerTimetableTab from '../../components/reports/tabs/LecturerTimetableTab';
+import AdminStatsPanel from '../../components/reports/AdminStatsPanel';
 import { useAuth, PERMISSIONS } from '../../lib/auth';
 
-type TabId =
-  | 'dashboard'
-  | 'students'
-  | 'courses'
-  | 'lecturers'
-  | 'sections'
-  | 'absentees'
-  | 'lectures'
-  | 'timetable';
+// التدريسي يعرض تبويبين فقط: تقارير المحاضرات والجدول الأسبوعي.
+// الإدارة (البرنامج/رئيس القسم/المسجل) ترى التبويبين أعلاه وأيضاً تبويب
+// «الإحصائيات والإدارة» الذي يجمع كل الإحصائيات في صفحة واحدة مرتبة.
+type TabId = 'lectures' | 'timetable' | 'adminStats';
 
 const TABS: Array<{ id: TabId; label: string }> = [
-  { id: 'dashboard', label: 'لوحة الإحصائيات' },
-  { id: 'students', label: 'الطلاب' },
-  { id: 'absentees', label: 'الغيابات' },
   { id: 'lectures', label: 'تقارير المحاضرات' },
   { id: 'timetable', label: 'الجدول الأسبوعي' },
-  { id: 'courses', label: 'المواد' },
-  { id: 'lecturers', label: 'المدرسون' },
-  { id: 'sections', label: 'الشعب والمراحل' },
+  { id: 'adminStats', label: 'الإحصائيات والإدارة' },
 ];
 
 export default function ReportsPage() {
   const { user, can } = useAuth();
-  const [activeTab, setActiveTab] = useState<TabId>('dashboard');
+  const isLecturer =
+    user?.role === 'LECTURER' || user?.role === 'TECHNICAL_LECTURER';
+  const [activeTab, setActiveTab] = useState<TabId>(
+    isLecturer ? 'lectures' : 'adminStats',
+  );
 
-  const isLecturer = user?.role === 'LECTURER' || user?.role === 'TECHNICAL_LECTURER';
-
-  // التدريسي يرى فقط: لوحة الإحصائيات، الطلاب، الغيابات، تقارير المحاضرات، والجدول الأسبوعي الخاص به
-  // ويُحجب عنه: تبويب "المواد"، "المدرسون"، و"الشعب والمراحل العامة"
-  const visibleTabs = TABS.filter((tab) => {
-    if (isLecturer) {
-      return (
-        tab.id === 'dashboard' ||
-        tab.id === 'students' ||
-        tab.id === 'absentees' ||
-        tab.id === 'lectures' ||
-        tab.id === 'timetable'
-      );
-    }
-    // المسؤولون (رئيس القسم / المسجل)
-    return tab.id !== 'timetable';
-  });
+  const visibleTabs = isLecturer
+    ? TABS.filter((tab) => tab.id !== 'adminStats')
+    : TABS;
 
   if (!can(PERMISSIONS.REPORTS_VIEW)) {
     return (
@@ -103,8 +78,9 @@ export default function ReportsPage() {
             <h1 style={{ fontSize: '24px', fontWeight: '800', color: '#111827' }}>التقارير والإحصائيات</h1>
           </div>
           <p style={{ color: 'var(--text-secondary)', fontSize: '13.5px' }}>
-            لوحة إحصائيات موحدة وتقارير تفصيلية للطلاب والمواد والمدرسين والشعب والمراحل
-            — تُحسب جميعها من المحاضرات المنتهية (الاستثناء: الحاضرون الآن في محاضرات جارية).
+            {isLecturer
+              ? 'تقارير تفصيلية لكل محاضرة مع سجلات الحضور والغياب والطباعة — والجدول الأسبوعي لحصصك.'
+              : 'تقارير تفصيلية لكل محاضرة — إحصائيات الإدارة مرتبة في تبويب واحد (الطلاب، الغيابات، المواد، المدرسون، الشعب والمراحل) — والجدول الأسبوعي.'}
           </p>
         </div>
 
@@ -147,14 +123,9 @@ export default function ReportsPage() {
           ))}
         </div>
 
-        {activeTab === 'dashboard' && <DashboardTab />}
-        {activeTab === 'students' && <StudentsReportTab />}
-        {activeTab === 'absentees' && <AbsenteesReportTab />}
         {activeTab === 'lectures' && <LectureReportsPanel />}
         {activeTab === 'timetable' && <LecturerTimetableTab />}
-        {activeTab === 'courses' && <CoursesReportTab />}
-        {activeTab === 'lecturers' && <LecturersReportTab />}
-        {activeTab === 'sections' && <SectionsStagesReportTab />}
+        {activeTab === 'adminStats' && <AdminStatsPanel />}
       </div>
     </div>
   );

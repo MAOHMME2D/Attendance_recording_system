@@ -2,7 +2,6 @@
 
 import React, { useCallback, useEffect, useState } from 'react';
 import { reportsApi, stageLabel, type ReportCourseItem, type ReportFilters, type ReportOptions, type ReportCourseStudentsResponse } from '../../../lib/api';
-import StatCard from '../StatCard';
 import ReportFiltersBar from '../ReportFilters';
 import ReportExport from '../ReportExport';
 
@@ -118,16 +117,6 @@ export default function CoursesReportTab() {
           disabled={items.length === 0}
         />
       </div>
-
-      {totals && (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: '10px', marginBottom: '14px' }}>
-          <StatCard label="المواد" value={totals.courses} icon="📚" />
-          <StatCard label="محاضرات منتهية" value={totals.closedLectures} tone="#065F46" />
-          <StatCard label="حالات الحضور" value={totals.present} tone="#065F46" />
-          <StatCard label="حالات الغياب" value={totals.absent} tone="#B91C1C" />
-          <StatCard label="نسبة الحضور" value={totals.attendanceRate == null ? 'N/A' : `${totals.attendanceRate}%`} tone="#065F46" />
-        </div>
-      )}
 
       {error && (
         <div role="alert" style={{ padding: '12px 16px', borderRadius: '12px', background: '#FEF2F2', border: '1px solid #FCA5A5', color: '#991B1B', fontSize: '13px', marginBottom: '14px' }}>

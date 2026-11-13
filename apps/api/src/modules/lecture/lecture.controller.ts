@@ -6,6 +6,7 @@ import {
   Patch,
   Param,
   Delete,
+  Query,
   Req,
 } from '@nestjs/common';
 import type { Request } from 'express';
@@ -93,14 +94,20 @@ export class LectureController {
     return this.lectureService.closeLecture(id, user, clientIp(req));
   }
 
-  /** Delete a lecture (administrative only). */
+  /**
+   * Delete a lecture (administrative only).
+   * By default the lecture is archived (attendance history preserved). Pass
+   * ?permanent=true to permanently delete the lecture and its attendance
+   * records; this cannot be undone.
+   */
   @Delete(':id')
   @RequirePermissions(PERMISSIONS.LECTURE_DELETE)
   async deleteLecture(
     @Param('id') id: string,
+    @Query('permanent') permanent: string | undefined,
     @CurrentUser() user: AuthenticatedUser,
     @Req() req: Request,
   ) {
-    return this.lectureService.deleteLecture(id, user, clientIp(req));
+    return this.lectureService.deleteLecture(id, user, clientIp(req), permanent === 'true');
   }
 }

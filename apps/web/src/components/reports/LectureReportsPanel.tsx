@@ -15,6 +15,8 @@ interface AttendanceRecord {
   section?: string | null;
   status: string;
   registeredAt: string;
+  /** «حاضر عبر …» when the student attended another section's session of the same course. */
+  note?: string | null;
 }
 
 interface LectureSection {
@@ -54,7 +56,14 @@ export default function LectureReportsPanel() {
   const [loading, setLoading] = useState(true);
   const [selectedLecture, setSelectedLecture] = useState<Lecture | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
-  const [deleteConfirm, setDeleteConfirm] = useState<{ id: string; name: string } | null>(null);
+  const [deleteConfirm, setDeleteConfirm] = useState<{
+    id: string;
+    name: string;
+    present: number;
+    absent: number;
+    total: number;
+  } | null>(null);
+  const [deleteAck, setDeleteAck] = useState(false);
   const [pdfLectureForReport, setPdfLectureForReport] = useState<Lecture | null>(null);
 
   useEffect(() => {
@@ -73,10 +82,27 @@ export default function LectureReportsPanel() {
     }
   };
 
+  const openDeleteConfirm = (lecture: Lecture) => {
+    const stats = getStats(lecture);
+    setDeleteAck(false);
+    setDeleteConfirm({
+      id: lecture.id,
+      name: lecture.name,
+      present: stats.present,
+      absent: stats.absent,
+      total: stats.total,
+    });
+  };
+
+  useEffect(() => {
+    // Reset the acknowledgment checkbox whenever the confirmation is closed.
+    if (!deleteConfirm) setDeleteAck(false);
+  }, [deleteConfirm]);
+
   const handleDeleteConfirmed = async () => {
-    if (!deleteConfirm) return;
+    if (!deleteConfirm || !deleteAck) return;
     try {
-      await lectureApi.delete(deleteConfirm.id);
+      await lectureApi.delete(deleteConfirm.id, { permanent: true });
       setLectures(prev => prev.filter(l => l.id !== deleteConfirm.id));
       if (selectedLecture?.id === deleteConfirm.id) setSelectedLecture(null);
     } catch (err: any) {
@@ -175,6 +201,7 @@ export default function LectureReportsPanel() {
       'وقت التسجيل': rec.status === 'PRESENT'
         ? formatAttendanceTime(rec.registeredAt, false)
         : '-',
+      'ملاحظة': rec.note || '',
     }));
 
     const worksheet = XLSX.utils.json_to_sheet(exportData);
@@ -184,6 +211,7 @@ export default function LectureReportsPanel() {
       { wch: 18 },
       { wch: 12 },
       { wch: 18 },
+      { wch: 28 },
     ];
 
     const workbook = XLSX.utils.book_new();
@@ -399,7 +427,7 @@ export default function LectureReportsPanel() {
                             className="btn btn-ghost btn-sm"
                             onClick={(e) => {
                               e.stopPropagation();
-                              setDeleteConfirm({ id: lecture.id, name: lecture.name });
+                              openDeleteConfirm(lecture);
                             }}
                             style={{ padding: '4px 8px', fontSize: '12px', color: 'var(--danger)' }}
                             title="حذف المحاضرة"
@@ -509,6 +537,7 @@ export default function LectureReportsPanel() {
                         <th>الباركود / ID</th>
                         <th>الحالة</th>
                         <th>الوقت</th>
+                        <th>ملاحظة</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -541,6 +570,9 @@ export default function LectureReportsPanel() {
                             {record.status === 'PRESENT' ? (
                               <bdi dir="ltr">{formatAttendanceTime(record.registeredAt, false)}</bdi>
                             ) : '-'}
+                          </td>
+                          <td style={{ fontSize: '12px', fontWeight: '700', color: '#B45309' }}>
+                            {record.note || '—'}
                           </td>
                         </tr>
                       ))}
@@ -601,14 +633,86 @@ export default function LectureReportsPanel() {
               </svg>
             </div>
 
-            <h3 style={{ fontSize: '19px', fontWeight: '800', color: '#111827', marginBottom: '8px' }}>
-              تأكيد حذف المحاضرة
+            <h3 style={{ fontSize: '19px', fontWeight: '800', color: '#991B1B', marginBottom: '8px' }}>
+              ⚠️ حذف نهائي للمحاضرة
             </h3>
 
-            <p style={{ fontSize: '14px', color: '#4B5563', lineHeight: '1.6', marginBottom: '24px' }}>
-              هل أنت متأكد من حذف محاضرة ({deleteConfirm.name})؟<br />
-              سيتم حذف جميع سجلات الحضور المرتبطة بها نهائياً.
+            <p style={{ fontSize: '13px', color: '#4B5563', lineHeight: '1.7', marginBottom: '10px' }}>
+              سيتم حذف محاضرة <strong>{deleteConfirm.name}</strong> نهائياً مع جميع سجلات الحضور المرتبطة بها:
             </p>
+
+            <div
+              style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(3, 1fr)',
+                gap: '8px',
+                marginBottom: '14px',
+              }}
+            >
+              {[
+                { label: 'حاضر', value: deleteConfirm.present, tone: '#059669' },
+                { label: 'غائب', value: deleteConfirm.absent, tone: '#DC2626' },
+                { label: 'إجمالي السجلات', value: deleteConfirm.total, tone: '#111827' },
+              ].map((item) => (
+                <div
+                  key={item.label}
+                  style={{
+                    background: '#F9FAFB',
+                    border: '1px solid #E5E7EB',
+                    borderRadius: '12px',
+                    padding: '8px 6px',
+                  }}
+                >
+                  <div style={{ fontSize: '17px', fontWeight: '800', color: item.tone }}>
+                    {item.value}
+                  </div>
+                  <div style={{ fontSize: '11px', color: '#6B7280', fontWeight: '600' }}>
+                    {item.label}
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <p
+              style={{
+                fontSize: '12px',
+                color: '#991B1B',
+                background: '#FEF2F2',
+                border: '1px solid #FECACA',
+                borderRadius: '10px',
+                padding: '10px 12px',
+                lineHeight: '1.7',
+                marginBottom: '14px',
+              }}
+            >
+              هذا الإجراء <strong>نهائي ولا يمكن التراجع عنه إطلاقاً</strong> — سيتم محو المحاضرة
+              وسجلاتها من قاعدة البيانات نهائياً ولن يكون من الممكن استرجاعها.
+            </p>
+
+            <label
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '10px',
+                background: '#FFFBEB',
+                border: '1px solid #FDE68A',
+                borderRadius: '10px',
+                padding: '10px 12px',
+                marginBottom: '16px',
+                cursor: 'pointer',
+                textAlign: 'right',
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={deleteAck}
+                onChange={(event) => setDeleteAck(event.target.checked)}
+                style={{ width: '18px', height: '18px', cursor: 'pointer', flexShrink: 0 }}
+              />
+              <span style={{ fontSize: '12px', fontWeight: '700', color: '#92400E', lineHeight: '1.6' }}>
+                أفهم أن الحذف نهائي ولا يمكن التراجع عنه إطلاقاً
+              </span>
+            </label>
 
             <div style={{ display: 'flex', gap: '10px', justifyContent: 'center' }}>
               <button
@@ -622,10 +726,17 @@ export default function LectureReportsPanel() {
               <button
                 type="button"
                 className="btn btn-danger"
+                disabled={!deleteAck}
                 onClick={handleDeleteConfirmed}
-                style={{ flex: 1, fontSize: '13px', fontWeight: '700' }}
+                style={{
+                  flex: 1,
+                  fontSize: '13px',
+                  fontWeight: '700',
+                  opacity: deleteAck ? 1 : 0.5,
+                  cursor: deleteAck ? 'pointer' : 'not-allowed',
+                }}
               >
-                تأكيد الحذف
+                حذف نهائي
               </button>
             </div>
           </div>
@@ -653,6 +764,7 @@ export default function LectureReportsPanel() {
             registeredAt: rec.registeredAt,
             studyPeriod: pdfLectureForReport.studyPeriod || undefined,
             section: rec.section || undefined,
+            note: rec.note,
           }))}
         />
       )}

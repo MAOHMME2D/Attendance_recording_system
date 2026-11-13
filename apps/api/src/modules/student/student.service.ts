@@ -1053,6 +1053,9 @@ export class StudentService {
 
     const whereClause: any = { deletedAt: null };
     let scopeLabel = '';
+    // Lectures to remove when the semester ends. Only a stage-scoped reset
+    // deletes lectures; a single-student reset keeps them for everyone else.
+    let lectureWhere: Prisma.LectureWhereInput | null = null;
 
     if (studentId) {
       const student = await this.prisma.student.findUnique({
@@ -1101,6 +1104,15 @@ export class StudentService {
           { sectionId: target.id },
           { sectionId: null, section: target.name },
         ];
+        lectureWhere = {
+          status: { notIn: ['ACTIVE', 'OPEN'] },
+          studyPeriod: target.studyPeriod,
+          OR: [
+            { sectionId: target.id },
+            { lectureSections: { some: { sectionId: target.id } } },
+            { sectionId: null, section: target.name },
+          ],
+        };
         scopeLabel = `stage=${requestedStage}, period=${target.studyPeriod}, section=${target.name}`;
       } else if (section && section !== 'ALL') {
         const name = normalizeSection(section);
@@ -1127,8 +1139,30 @@ export class StudentService {
           { sectionId: matches[0].id },
           { sectionId: null, section: matches[0].name },
         ];
+        lectureWhere = {
+          status: { notIn: ['ACTIVE', 'OPEN'] },
+          studyPeriod: matches[0].studyPeriod,
+          OR: [
+            { sectionId: matches[0].id },
+            { lectureSections: { some: { sectionId: matches[0].id } } },
+            { sectionId: null, section: matches[0].name },
+          ],
+        };
         scopeLabel = `stage=${requestedStage}, period=${matches[0].studyPeriod}, section=${matches[0].name}`;
       } else {
+        lectureWhere = {
+          status: { notIn: ['ACTIVE', 'OPEN'] },
+          ...(studyPeriod ? { studyPeriod } : {}),
+          OR: [
+            { course: { stage: requestedStage } },
+            { sectionRef: { stage: requestedStage } },
+            {
+              lectureSections: {
+                some: { section: { stage: requestedStage } },
+              },
+            },
+          ],
+        };
         scopeLabel =
           `stage=${requestedStage}, period=${studyPeriod || 'ALL'}, section=ALL`;
       }
@@ -1139,17 +1173,47 @@ export class StudentService {
       select: { id: true, name: true },
     });
 
-    if (students.length === 0) {
+    const studentIds = students.map((s) => s.id);
+    // Lectures are only removed when the whole semester is reset. An
+    // ABSENCES_ONLY reset explicitly preserves lectures and present records.
+    const lectureFilter = resetType === 'ALL_ATTENDANCE' ? lectureWhere : null;
+    let deletedLectures = 0;
+
+    if (studentIds.length === 0 && !lectureFilter) {
       return {
         success: true,
         count: 0,
+        lectures: 0,
         message: 'لم يتم العثور على طلاب مطابقين للتصفير',
       };
     }
 
-    const studentIds = students.map((s) => s.id);
-
     await this.prisma.$transaction(async (tx) => {
+      // Semester reset also removes the semester's lectures (except any still
+      // OPEN lecture, whose records are never touched). Attendance rows must be
+      // deleted first because they reference the lecture.
+      if (lectureFilter) {
+        const lectureIds = (
+          await tx.lecture.findMany({
+            where: lectureFilter,
+            select: { id: true },
+          })
+        ).map((lecture) => lecture.id);
+
+        if (lectureIds.length > 0) {
+          await tx.attendanceRecord.deleteMany({
+            where: { lectureId: { in: lectureIds } },
+          });
+          await tx.lectureSection.deleteMany({
+            where: { lectureId: { in: lectureIds } },
+          });
+          const removed = await tx.lecture.deleteMany({
+            where: { id: { in: lectureIds } },
+          });
+          deletedLectures = removed.count;
+        }
+      }
+
       // ISS-02 Fix: Only delete attendance records belonging to CLOSED, non-deleted lectures
       // Active (OPEN) lectures must never have their attendance records wiped during a reset.
       const closedLectureCondition = {
@@ -1186,20 +1250,30 @@ export class StudentService {
         actorUserId: actor.id,
         action,
         entityType: 'Student',
-        details: `scope=${scopeLabel}, type=${resetType}, count=${students.length}`,
+        details: `scope=${scopeLabel}, type=${resetType}, count=${students.length}, lectures=${deletedLectures}`,
       });
     }
 
     this.logger.log(
-      `${resetType} completed for ${students.length} students (${scopeLabel})`,
+      `${resetType} completed for ${students.length} students, ${deletedLectures} lectures removed (${scopeLabel})`,
     );
+
+    if (students.length === 0) {
+      return {
+        success: true,
+        count: 0,
+        lectures: deletedLectures,
+        message: `تم حذف ${deletedLectures} محاضرة بنجاح`,
+      };
+    }
 
     return {
       success: true,
       count: students.length,
+      lectures: deletedLectures,
       message:
         resetType === 'ALL_ATTENDANCE'
-          ? `تم تصفير سجل الحضور والغياب بالكامل لـ ${students.length} طالب بنجاح`
+          ? `تم تصفير سجلات ${students.length} طالب وحذف ${deletedLectures} محاضرة بنجاح`
           : `تم تصفير الغيابات لـ ${students.length} طالب بنجاح`,
     };
   }

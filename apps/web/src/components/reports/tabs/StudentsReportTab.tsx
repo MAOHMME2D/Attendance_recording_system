@@ -4,14 +4,18 @@ import React, { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { reportsApi, stageLabel, type ReportFilters, type ReportOptions, type ReportStudentsPage } from '../../../lib/api';
+import { useAuth, PERMISSIONS } from '../../../lib/auth';
 import StatCard from '../StatCard';
 import ReportFiltersBar from '../ReportFilters';
 import ReportExport from '../ReportExport';
+import ResetAbsencesModal from '../../modals/ResetAbsencesModal';
 
 const PAGE_SIZE = 25;
 
 export default function StudentsReportTab() {
   const router = useRouter();
+  const { can } = useAuth();
+  const canResetAbsences = can(PERMISSIONS.ABSENCES_RESET);
   const [options, setOptions] = useState<ReportOptions | null>(null);
   const [filters, setFilters] = useState<ReportFilters>({});
   const [sort, setSort] = useState<string>('name');
@@ -19,6 +23,8 @@ export default function StudentsReportTab() {
   const [data, setData] = useState<ReportStudentsPage | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState<string | null>(null);
+  const [showReset, setShowReset] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -87,6 +93,23 @@ export default function StudentsReportTab() {
           </p>
         </div>
         <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+          {canResetAbsences && (
+            <button
+              type="button"
+              className="btn btn-sm"
+              onClick={() => setShowReset(true)}
+              title="بداية فصل دراسي جديد: حذف سجلات الحضور والغياب والإجمالي للمرحلة المحددة"
+              style={{
+                fontSize: '12px',
+                backgroundColor: '#FEF2F2',
+                color: '#DC2626',
+                border: '1px solid #FCA5A5',
+                fontWeight: '700',
+              }}
+            >
+              🔄 تصفير الفصل الدراسي
+            </button>
+          )}
           <select className="input" value={sort} onChange={(e) => setSort(e.target.value)} style={{ width: 'auto', fontSize: '12px' }} aria-label="الترتيب">
             <option value="name">الترتيب: الاسم</option>
             <option value="studentCode">الترتيب: الباركود</option>
@@ -129,6 +152,12 @@ export default function StudentsReportTab() {
           <StatCard label="حالات الحضور" value={totals.present} tone="#065F46" />
           <StatCard label="حالات الغياب" value={totals.absent} tone="#B91C1C" />
           <StatCard label="نسبة الحضور العامة" value={totals.attendanceRate == null ? 'N/A' : `${totals.attendanceRate}%`} tone="#065F46" />
+        </div>
+      )}
+
+      {success && (
+        <div role="status" style={{ padding: '12px 16px', borderRadius: '12px', background: '#ECFDF5', border: '1px solid #A7F3D0', color: '#065F46', fontSize: '13px', fontWeight: '700', marginBottom: '14px' }}>
+          ✅ {success}
         </div>
       )}
 
@@ -200,6 +229,17 @@ export default function StudentsReportTab() {
           </div>
         </>
       )}
+
+      <ResetAbsencesModal
+        isOpen={showReset}
+        onClose={() => setShowReset(false)}
+        onSuccess={(message) => {
+          setSuccess(message);
+          load();
+        }}
+        currentStage={filters.stage ? Number(filters.stage) : undefined}
+        currentSectionId={filters.sectionId}
+      />
     </div>
   );
 }

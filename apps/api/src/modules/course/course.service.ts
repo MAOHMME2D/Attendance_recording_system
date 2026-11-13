@@ -29,7 +29,9 @@ export class CourseService {
     return this.prisma.course.findMany({
       where,
       include: {
-        _count: { select: { lectures: true, assignments: true } },
+        _count: {
+          select: { lectures: { where: { deletedAt: null } }, assignments: true },
+        },
       },
       orderBy: [{ stage: 'asc' }, { code: 'asc' }],
     });
@@ -124,16 +126,13 @@ export class CourseService {
   }
 
   async delete(id: string, actor: AuthenticatedUser) {
-    const course = await this.prisma.course.findUnique({
-      where: { id },
-      include: { _count: { select: { lectures: true, assignments: true } } },
-    });
-    if (!course) throw new NotFoundException('المادة غير موجودة');
+    const deps = await this.dependencies(id);
 
-    if (course._count.lectures > 0) {
-      throw new ConflictException(
-        'لا يمكن حذف المادة لأنها مرتبطة بمحاضرات. احذف المحاضرات أولاً أو أبقِ المادة.',
-      );
+    if (!deps.canDelete) {
+      throw new ConflictException({
+        message: 'لا يمكن حذف المادة قبل إزالة الارتباطات التالية',
+        blockers: deps.blockers,
+      });
     }
 
     await this.prisma.course.delete({ where: { id } });
@@ -143,9 +142,106 @@ export class CourseService {
       action: 'COURSE_DELETE',
       entityType: 'Course',
       entityId: id,
-      details: `${course.code} - ${course.name}`,
+      details: `${deps.code} - ${deps.name} (stage ${deps.stage})`,
     });
 
     return { success: true };
+  }
+
+  /**
+   * What still references this course, with the action needed to remove each
+   * blocker. The web app shows this list in a modal before any deletion.
+   */
+  async dependencies(id: string) {
+    const course = await this.prisma.course.findUnique({
+      where: { id },
+      include: {
+        _count: {
+          select: {
+            // Archived lectures no longer block deleting the course.
+            lectures: { where: { deletedAt: null } },
+            assignments: true,
+            timetableEntries: true,
+          },
+        },
+      },
+    });
+    if (!course) throw new NotFoundException('المادة غير موجودة');
+
+    // A carry-over/repeat student may be explicitly required to take this
+    // course; deleting it would leave a dangling id in his enrollment.
+    const settings = await this.prisma.systemSetting.findMany({
+      where: { key: { startsWith: 'STUDENT_COURSES_' } },
+    });
+    let requiredByStudents = 0;
+    for (const setting of settings) {
+      try {
+        const parsed = JSON.parse(setting.value);
+        if (
+          parsed &&
+          parsed.academicStatus !== 'REGULAR' &&
+          Array.isArray(parsed.courseIds) &&
+          parsed.courseIds.includes(id)
+        ) {
+          requiredByStudents += 1;
+        }
+      } catch {}
+    }
+
+    const blockers: Array<{
+      key: string;
+      count: number;
+      label: string;
+      action: string;
+    }> = [];
+
+    if (course._count.lectures > 0) {
+      blockers.push({
+        key: 'lectures',
+        count: course._count.lectures,
+        label: 'محاضرات مرتبطة بهذه المادة (وسجلات حضورها)',
+        action: 'احذف هذه المحاضرات من صفحة الحضور أولاً',
+      });
+    }
+
+    if (requiredByStudents > 0) {
+      blockers.push({
+        key: 'students',
+        count: requiredByStudents,
+        label: 'طلاب مطالبون بهذه المادة (عبور أو إعادة)',
+        action: 'احذف المادة من مواد هؤلاء الطلاب من زر «المواد» في صفحة الطلاب أولاً',
+      });
+    }
+
+    const notes: string[] = [];
+    if (course._count.assignments > 0) {
+      notes.push(
+        `سيتم إلغاء إسناد المادة لـ ${course._count.assignments} محاضر تلقائياً عند الحذف.`,
+      );
+    }
+    if (course._count.timetableEntries > 0) {
+      notes.push(
+        `يوجد ${course._count.timetableEntries} موعد في الجدول الدراسي لهذه المادة وسيُحذف تلقائياً معها.`,
+      );
+    }
+    const archivedLectures = await this.prisma.lecture.count({
+      where: { courseId: id, deletedAt: { not: null } },
+    });
+    if (archivedLectures > 0) {
+      notes.push(
+        `توجد ${archivedLectures} محاضرة محذوفة (مؤرشفة) لهذه المادة؛ سجلات حضورها محفوظة في التقارير.`,
+      );
+    }
+
+    return {
+      entity: 'COURSE' as const,
+      id: course.id,
+      code: course.code,
+      name: course.name,
+      stage: course.stage,
+      canDelete: blockers.length === 0,
+      blockers,
+      notes,
+    };
   }
 }

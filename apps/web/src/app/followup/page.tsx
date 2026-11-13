@@ -275,7 +275,6 @@ export default function FollowupPage() {
               <select
                 className="input"
                 value={stage}
-                disabled={needsCourse}
                 onChange={(e) => {
                   setStage(e.target.value);
                   setSectionId('');
@@ -295,7 +294,6 @@ export default function FollowupPage() {
               <select
                 className="input"
                 value={sectionId}
-                disabled={needsCourse}
                 onChange={(e) => {
                   setSectionId(e.target.value);
                   resetToFirstPage();

@@ -19,8 +19,6 @@ import {
 import * as XLSX from 'xlsx';
 import StudentQrCardModal from '../../components/cards/StudentQrCardModal';
 import BulkStudentCardsModal from '../../components/cards/BulkStudentCardsModal';
-import ResetAbsencesModal from '../../components/modals/ResetAbsencesModal';
-import AttendancePdfReportModal from '../../components/modals/AttendancePdfReportModal';
 import StudentCourseEnrollmentModal from '../../components/modals/StudentCourseEnrollmentModal';
 import { useAuth, PERMISSIONS } from '../../lib/auth';
 
@@ -133,7 +131,7 @@ function parseSpreadsheet(rows: unknown[][]): ImportRow[] {
       0,
     );
     if (width >= 7) {
-      // Legacy layout: ت, الاسم, الدراسة, الشعبة, الحضور, الغياب, الإجمالي, الباركود
+      // Legacy sheet layout: ت, الاسم, الدراسة, الشعبة, أعمدة إحصائية قديمة, الباركود
       colOrder = 0;
       colName = 1;
       colSection = 3;
@@ -180,7 +178,6 @@ function parseSpreadsheet(rows: unknown[][]): ImportRow[] {
 export default function StudentsPage() {
   const { can } = useAuth();
   const canManageStudents = can(PERMISSIONS.STUDENTS_MANAGE);
-  const canResetAbsences = can(PERMISSIONS.ABSENCES_RESET);
   const canIssueQr = can(PERMISSIONS.QR_ISSUE);
 
   const [students, setStudents] = useState<StudentListItem[]>([]);
@@ -202,10 +199,6 @@ export default function StudentsPage() {
   const [selectedStudentForCard, setSelectedStudentForCard] = useState<StudentListItem | null>(null);
   const [selectedStudentForCourses, setSelectedStudentForCourses] = useState<StudentListItem | null>(null);
   const [showBulkPrintModal, setShowBulkPrintModal] = useState(false);
-
-  // Existing modals
-  const [showResetModal, setShowResetModal] = useState(false);
-  const [showPdfReportModal, setShowPdfReportModal] = useState(false);
 
   // Add / edit modal
   const [formMode, setFormMode] = useState<'add' | 'edit' | null>(null);
@@ -344,34 +337,6 @@ export default function StudentsPage() {
     return counts;
   }, [students]);
 
-  // Counters follow the selected stage: a carry-over student's attendance is
-  // counted only for the stage of the course it belongs to, so the stage 1
-  // view never shows the stage 2 numbers (and the other way round).
-  const statsFor = useCallback(
-    (student: StudentListItem) => {
-      if (stageFilter === 'ALL') {
-        return {
-          presentCount: student.presentCount,
-          absentCount: student.absentCount,
-          totalLectures: student.totalLectures,
-        };
-      }
-      const stage = Number(stageFilter);
-      let presentCount = 0;
-      let absentCount = 0;
-      for (const item of student.history || []) {
-        // A record whose course stage is unknown belongs to the student's own
-        // stage; records of other stages are excluded from this view.
-        const recordStage = item.courseStage ?? student.stage;
-        if (recordStage !== stage) continue;
-        if (item.status === 'PRESENT') presentCount += 1;
-        else if (item.status === 'ABSENT') absentCount += 1;
-      }
-      return { presentCount, absentCount, totalLectures: presentCount + absentCount };
-    },
-    [stageFilter],
-  );
-
   const statusCounts = useMemo(() => {
     let regular = 0;
     let repeat = 0;
@@ -385,24 +350,10 @@ export default function StudentsPage() {
     return { regular, repeat, carryOver };
   }, [students]);
 
-  const monthlyAlertCount = filteredStudents.filter(
-    (student) => statsFor(student).absentCount >= 3,
-  ).length;
-
   const selectedFilterSection =
     sectionFilter !== 'ALL'
       ? sections.find((section) => section.id === sectionFilter) || null
       : null;
-
-  // The detail modal mirrors the stage filter so its numbers and history match
-  // the row the user opened.
-  const selectedStudentStats = selectedStudent ? statsFor(selectedStudent) : null;
-  const selectedStudentHistory =
-    selectedStudent && stageFilter !== 'ALL'
-      ? selectedStudent.history.filter(
-          (item) => (item.courseStage ?? selectedStudent.stage) === Number(stageFilter),
-        )
-      : selectedStudent?.history || [];
 
   // Client-side pagination keeps the table usable with hundreds of students.
   const totalPages = Math.max(1, Math.ceil(filteredStudents.length / STUDENTS_PAGE_SIZE));
@@ -514,9 +465,7 @@ export default function StudentsPage() {
     setDeleteLoading(true);
     try {
       await studentApi.delete(deleteTarget.id);
-      setSuccessBanner(
-        'تم حذف الطالب. تُحفظ سجلات الحضور السابقة ويُخفى الطالب من القوائم.',
-      );
+      setSuccessBanner('تم حذف الطالب من القوائم.');
       if (selectedStudent?.id === deleteTarget.id) setSelectedStudent(null);
       setSelectedIds((current) => {
         const next = new Set(current);
@@ -580,9 +529,7 @@ export default function StudentsPage() {
       setError(`تم حذف ${deleted} طالبًا، وتعذّر حذف ${failed} طالبًا. أعد المحاولة للمتبقين.`);
     }
     if (deleted > 0) {
-      setSuccessBanner(
-        `تم حذف ${deleted} طالبًا من القوائم مع الحفاظ على سجلات الحضور السابقة.`,
-      );
+      setSuccessBanner(`تم حذف ${deleted} طالبًا من القوائم.`);
     }
   };
 
@@ -697,20 +644,14 @@ export default function StudentsPage() {
       return;
     }
 
-    const exportData = filteredStudents.map((student, index) => {
-      const stats = statsFor(student);
-      return {
-        ت: student.orderIndex != null ? student.orderIndex : index + 1,
-        'اسم الطالب': student.name,
-        المرحلة: stageLabel(student.stage),
-        الدراسة: PERIOD_LABELS[student.studyPeriod || 'MORNING'] || student.studyPeriod,
-        الشعبة: student.sectionLabel || student.section || '',
-        'عدد مرات الحضور': stats.presentCount,
-        'عدد مرات الغياب': stats.absentCount,
-        'اجمالى المحاضرات': stats.totalLectures,
-        الباركود: student.studentCode,
-      };
-    });
+    const exportData = filteredStudents.map((student, index) => ({
+      ت: student.orderIndex != null ? student.orderIndex : index + 1,
+      'اسم الطالب': student.name,
+      المرحلة: stageLabel(student.stage),
+      الدراسة: PERIOD_LABELS[student.studyPeriod || 'MORNING'] || student.studyPeriod,
+      الشعبة: student.sectionLabel || student.section || '',
+      الباركود: student.studentCode,
+    }));
 
     const worksheet = XLSX.utils.json_to_sheet(exportData);
     worksheet['!cols'] = [
@@ -719,9 +660,6 @@ export default function StudentsPage() {
       { wch: 16 },
       { wch: 12 },
       { wch: 14 },
-      { wch: 18 },
-      { wch: 18 },
-      { wch: 18 },
       { wch: 20 },
     ];
 
@@ -759,22 +697,6 @@ export default function StudentsPage() {
           </div>
 
           <div className="page-actions">
-            {canResetAbsences && (
-              <button
-                className="btn btn-sm"
-                onClick={() => setShowResetModal(true)}
-                title="تصفير سجلات الحضور والغياب لبداية كورس جديد"
-                style={{
-                  fontSize: '12px',
-                  backgroundColor: '#FEF2F2',
-                  color: '#DC2626',
-                  border: '1px solid #FCA5A5',
-                  fontWeight: '700',
-                }}
-              >
-                🔄 تصفير سجلات الكورس
-              </button>
-            )}
             {canManageStudents && selectedIds.size > 0 && (
               <button
                 className="btn btn-sm"
@@ -817,12 +739,6 @@ export default function StudentsPage() {
                 </button>
               </>
             )}
-            <button
-              className="btn btn-success btn-sm"
-              onClick={() => setShowPdfReportModal(true)}
-            >
-              📄 تصدير كشف الغيابات (PDF)
-            </button>
             <button
               className="btn btn-ghost btn-sm"
               onClick={handleExportExcel}
@@ -1004,11 +920,6 @@ export default function StudentsPage() {
 
           <div style={{ marginTop: '12px', fontSize: '12.5px', color: '#6B7280' }}>
             المعروض حالياً: <strong style={{ color: '#111827' }}>{filteredStudents.length}</strong> طالب
-            {monthlyAlertCount > 0 && (
-              <span style={{ color: '#B45309', fontWeight: '700' }}>
-                {' '}· {monthlyAlertCount} معرّض للإنذار (3+ غياب)
-              </span>
-            )}
           </div>
         </div>
 
@@ -1099,15 +1010,11 @@ export default function StudentsPage() {
                     <th style={{ textAlign: 'center' }}>المرحلة</th>
                     <th style={{ textAlign: 'center' }}>الدراسة</th>
                     <th style={{ textAlign: 'center' }}>الشعبة</th>
-                    <th style={{ textAlign: 'center' }}>حضور</th>
-                    <th style={{ textAlign: 'center' }}>غياب</th>
-                    <th style={{ textAlign: 'center' }}>إجمالي</th>
                     <th style={{ textAlign: 'center' }}>إجراءات</th>
                   </tr>
                 </thead>
                 <tbody>
                   {pagedStudents.map((student) => {
-                    const stats = statsFor(student);
                     return (
                     <tr
                       key={student.id}
@@ -1152,15 +1059,6 @@ export default function StudentsPage() {
                       <td style={{ textAlign: 'center', fontSize: '12px', fontWeight: '600', color: '#374151' }}>
                         {student.sectionLabel || student.section || '-'}
                       </td>
-                      <td style={{ textAlign: 'center', color: '#059669', fontWeight: '700' }}>
-                        {stats.presentCount}
-                      </td>
-                      <td style={{ textAlign: 'center', color: stats.absentCount > 0 ? '#DC2626' : '#6B7280', fontWeight: '700' }}>
-                        {stats.absentCount}
-                      </td>
-                      <td style={{ textAlign: 'center', fontWeight: '600', color: '#374151' }}>
-                        {stats.totalLectures}
-                      </td>
                       <td>
                         <StudentActions
                           student={student}
@@ -1183,7 +1081,6 @@ export default function StudentsPage() {
             {/* Mobile cards */}
             <div className="students-mobile-list">
               {pagedStudents.map((student) => {
-                const stats = statsFor(student);
                 return (
                 <div
                   key={student.id}
@@ -1228,12 +1125,6 @@ export default function StudentsPage() {
 
                   <div style={{ fontSize: '12px', color: '#4B5563', marginTop: '6px' }}>
                     {stageLabel(student.stage)} · {student.sectionLabel || student.section || 'بلا شعبة'}
-                  </div>
-
-                  <div style={{ display: 'flex', gap: '8px', marginTop: '10px', flexWrap: 'wrap' }}>
-                    <MiniStat label="حضور" value={stats.presentCount} tone="#059669" />
-                    <MiniStat label="غياب" value={stats.absentCount} tone={stats.absentCount > 0 ? '#DC2626' : '#6B7280'} />
-                    <MiniStat label="إجمالي" value={stats.totalLectures} />
                   </div>
 
                   <div style={{ marginTop: '12px' }}>
@@ -1312,35 +1203,53 @@ export default function StudentsPage() {
               <button className="btn btn-ghost btn-sm" onClick={() => setSelectedStudent(null)} style={{ fontSize: '14px' }}>✕</button>
             </div>
 
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '10px', marginBottom: '18px' }}>
-              <MiniStat label="حضور" value={selectedStudentStats?.presentCount ?? 0} tone="#059669" />
-              <MiniStat label="غياب" value={selectedStudentStats?.absentCount ?? 0} tone="#DC2626" />
-              <MiniStat label="إجمالي" value={selectedStudentStats?.totalLectures ?? 0} />
-            </div>
-
-            <h3 style={{ fontSize: '14px', fontWeight: '700', marginBottom: '10px', color: '#374151' }}>سجل المحاضرات:</h3>
-
-            {selectedStudentHistory.length === 0 ? (
-              <p style={{ color: 'var(--text-muted)', fontSize: '13px', textAlign: 'center', padding: '16px' }}>
-                لم يتم تسجيل أي حضور بعد لهذا الطالب
-              </p>
-            ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                {selectedStudentHistory.map((item) => (
-                  <div key={item.attendanceId} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 12px', background: '#F9FAFB', borderRadius: '8px', fontSize: '12px', border: '1px solid #F3F4F6', gap: '10px' }}>
-                    <div>
-                      <div style={{ fontWeight: '600', color: '#111827' }}>{item.lectureName}</div>
-                      <div style={{ color: '#6B7280', fontSize: '11px' }}>
-                        {new Date(item.lectureDate).toLocaleDateString('ar-IQ')}
-                      </div>
-                    </div>
-                    <span style={{ padding: '2px 8px', borderRadius: '6px', fontSize: '11px', fontWeight: '700', background: item.status === 'PRESENT' ? '#ECFDF5' : '#FEF2F2', color: item.status === 'PRESENT' ? '#065F46' : '#991B1B' }}>
-                      {item.status === 'PRESENT' ? 'حاضر' : 'غائب'}
-                    </span>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '10px' }}>
+              {[
+                { label: 'المرحلة', value: stageLabel(selectedStudent.stage) },
+                {
+                  label: 'الدراسة',
+                  value:
+                    PERIOD_LABELS[selectedStudent.studyPeriod || 'MORNING'] ||
+                    selectedStudent.studyPeriod ||
+                    '—',
+                },
+                {
+                  label: 'الشعبة',
+                  value: selectedStudent.sectionLabel || selectedStudent.section || 'بلا شعبة',
+                },
+                {
+                  label: 'الحالة الأكاديمية',
+                  value:
+                    selectedStudent.academicStatus === 'REPEAT'
+                      ? `راسب (${selectedStudent.customCourseCount || 0} مواد)`
+                      : selectedStudent.academicStatus === 'CARRY_OVER'
+                        ? `عبور (${selectedStudent.customCourseCount || 0} مواد)`
+                        : 'نظامي',
+                },
+                { label: 'الباركود', value: selectedStudent.studentCode },
+                {
+                  label: 'تاريخ التسجيل',
+                  value: new Date(selectedStudent.createdAt).toLocaleDateString('ar-IQ'),
+                },
+              ].map((item) => (
+                <div
+                  key={item.label}
+                  style={{
+                    padding: '10px 12px',
+                    background: '#F9FAFB',
+                    border: '1px solid #E5E7EB',
+                    borderRadius: '10px',
+                  }}
+                >
+                  <div style={{ fontSize: '11px', color: 'var(--text-muted)', fontWeight: '700', marginBottom: '3px' }}>
+                    {item.label}
                   </div>
-                ))}
-              </div>
-            )}
+                  <div style={{ fontSize: '13.5px', fontWeight: '700', color: '#111827' }}>
+                    {item.value}
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
         </div>
       )}
@@ -1355,8 +1264,6 @@ export default function StudentsPage() {
             <h3 style={{ fontSize: '17px', fontWeight: '800', color: '#111827', marginBottom: '8px' }}>تأكيد حذف الطالب</h3>
             <p style={{ fontSize: '13px', color: '#4B5563', lineHeight: '1.7', marginBottom: '20px' }}>
               هل أنت متأكد من حذف <strong>{deleteTarget.name}</strong> (باركود: {deleteTarget.studentCode})؟
-              <br />
-              إذا كانت لديه سجلات حضور فسيُخفى من القوائم مع الحفاظ على السجلات.
             </p>
             <div style={{ display: 'flex', gap: '10px', justifyContent: 'center' }}>
               <button className="btn btn-ghost" onClick={() => setDeleteTarget(null)} disabled={deleteLoading} style={{ flex: 1, fontSize: '13px' }}>
@@ -1697,8 +1604,7 @@ export default function StudentsPage() {
               حذف {selectedIds.size} طالبًا
             </h3>
             <p style={{ fontSize: '13.5px', color: '#4B5563', lineHeight: 1.8 }}>
-              سيُخفى الطلاب المحددون من القوائم، وتبقى سجلات حضورهم السابقة محفوظة في التقارير.
-              هل تريد المتابعة؟
+              سيُخفى الطلاب المحددون من القوائم. هل تريد المتابعة؟
             </p>
             <div style={{ display: 'flex', gap: '10px', marginTop: '18px' }}>
               <button
@@ -1736,45 +1642,6 @@ export default function StudentsPage() {
           onClose={() => setShowBulkPrintModal(false)}
         />
       )}
-
-      {canResetAbsences && (
-        <ResetAbsencesModal
-          isOpen={showResetModal}
-          onClose={() => setShowResetModal(false)}
-          onSuccess={(message) => {
-            setSuccessBanner(message);
-            loadStudents();
-          }}
-          currentStudyPeriod={periodFilter !== 'ALL' ? periodFilter : undefined}
-          currentStage={stageFilter !== 'ALL' ? Number(stageFilter) : undefined}
-          currentSection={selectedFilterSection?.name}
-          currentSectionId={selectedFilterSection?.id}
-        />
-      )}
-
-      <AttendancePdfReportModal
-        isOpen={showPdfReportModal}
-        onClose={() => setShowPdfReportModal(false)}
-        reportTitle="كشف غيابات وحضور الطلبة"
-        studyPeriodLabel={
-          periodFilter === 'EVENING'
-            ? 'الدراسة المسائية'
-            : periodFilter === 'MORNING'
-              ? 'الدراسة الصباحية'
-              : 'كافة الدراسات'
-        }
-        sectionLabel={
-          selectedFilterSection
-            ? `شعبة ${selectedFilterSection.name}`
-            : stageFilter !== 'ALL'
-              ? `${STAGE_LABELS[stageFilter as 1 | 2 | 3 | 4]}`
-              : 'كافة الشُعب'
-        }
-        records={filteredStudents.map((student) => ({
-          ...student,
-          ...statsFor(student),
-        }))}
-      />
 
       <StudentCourseEnrollmentModal
         isOpen={Boolean(selectedStudentForCourses)}
@@ -1851,33 +1718,6 @@ function PeriodBadge({ period }: { period?: string }) {
     >
       {evening ? 'مسائي' : 'صباحي'}
     </span>
-  );
-}
-
-function MiniStat({
-  label,
-  value,
-  tone,
-}: {
-  label: string;
-  value: number | string;
-  tone?: string;
-}) {
-  return (
-    <div
-      style={{
-        flex: 1,
-        minWidth: '74px',
-        textAlign: 'center',
-        padding: '6px 8px',
-        borderRadius: '10px',
-        background: '#F9FAFB',
-        border: '1px solid #E5E7EB',
-      }}
-    >
-      <div style={{ fontSize: '15px', fontWeight: '800', color: tone || '#111827' }}>{value}</div>
-      <div style={{ fontSize: '11px', color: 'var(--text-muted)', fontWeight: '600' }}>{label}</div>
-    </div>
   );
 }
 

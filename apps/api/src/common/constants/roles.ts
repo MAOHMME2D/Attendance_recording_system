@@ -67,6 +67,7 @@ export const PERMISSIONS = {
   STUDENT_FOLLOWUP_VIEW: 'STUDENT_FOLLOWUP_VIEW',
   QR_ISSUE: 'QR_ISSUE',
   ABSENCES_RESET: 'ABSENCES_RESET',
+  ACADEMIC_YEAR_RESET: 'ACADEMIC_YEAR_RESET',
   AUDIT_VIEW: 'AUDIT_VIEW',
   MANAGE_STAFF: 'MANAGE_STAFF',
 } as const;
@@ -103,6 +104,7 @@ export const ROLE_PERMISSIONS: Record<StaffRole, readonly Permission[]> = {
     PERMISSIONS.ASSIGNMENTS_MANAGE,
     PERMISSIONS.QR_ISSUE,
     PERMISSIONS.ABSENCES_RESET,
+    PERMISSIONS.ACADEMIC_YEAR_RESET,
     // Registrar may manage lecturers/technical lecturers only; the role
     // restrictions are enforced server-side in StaffService.
     PERMISSIONS.MANAGE_STAFF,

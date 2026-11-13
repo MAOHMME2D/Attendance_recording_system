@@ -17,6 +17,7 @@ import {
   stageLabel,
   type AssignmentItem,
   type CourseItem,
+  type DeleteDependencies,
   type ManagedStaff,
   type SectionItem,
   type StaffRole,
@@ -25,6 +26,7 @@ import {
 } from '../../lib/api';
 import { useAuth, PERMISSIONS, ROLE_LABELS } from '../../lib/auth';
 import CollapsibleSection from '../../components/ui/CollapsibleSection';
+import DeleteGuardModal from '../../components/modals/DeleteGuardModal';
 
 type Tab = 'sections' | 'courses' | 'assignments' | 'timetable';
 
@@ -169,6 +171,18 @@ export default function AcademicsPage() {
   const [actionLoading, setActionLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+
+  // Pre-flight check before deleting a section/course: the modal lists every
+  // blocker that has to be removed first before the user can confirm.
+  const [deleteGuard, setDeleteGuard] = useState<{
+    kind: 'section' | 'course';
+    id: string;
+    name: string;
+    meta?: string;
+  } | null>(null);
+  const [deleteDeps, setDeleteDeps] = useState<DeleteDependencies | null>(null);
+  const [deleteDepsLoading, setDeleteDepsLoading] = useState(false);
+  const [deleteDepsError, setDeleteDepsError] = useState<string | null>(null);
 
   const [sections, setSections] = useState<SectionItem[]>([]);
   const [courses, setCourses] = useState<CourseItem[]>([]);
@@ -382,12 +396,82 @@ export default function AcademicsPage() {
     }, 'تم تحديث الشعبة بنجاح');
   };
 
+  // ---------------- Delete guard (pre-flight check) ----------------
+  // Clicking «حذف» never deletes directly: a modal appears that first lists
+  // everything still linked to the entity and what has to be removed, then
+  // asks for confirmation only when nothing blocks the deletion.
+  const openDeleteGuard = (
+    kind: 'section' | 'course',
+    id: string,
+    name: string,
+    meta?: string,
+  ) => {
+    setDeleteGuard({ kind, id, name, meta });
+    setDeleteDeps(null);
+    setDeleteDepsError(null);
+    setDeleteDepsLoading(true);
+    const fetcher =
+      kind === 'section' ? sectionApi.dependencies : courseApi.dependencies;
+    fetcher(id)
+      .then((deps) => setDeleteDeps(deps))
+      .catch((err) => setDeleteDepsError(errorMessage(err)))
+      .finally(() => setDeleteDepsLoading(false));
+  };
+
+  const closeDeleteGuard = () => {
+    if (actionLoading) return;
+    setDeleteGuard(null);
+    setDeleteDeps(null);
+    setDeleteDepsError(null);
+  };
+
+  const confirmGuardedDelete = () => {
+    if (!deleteGuard || !deleteDeps?.canDelete || actionLoading) return;
+    const { kind, id } = deleteGuard;
+    setActionLoading(true);
+    setError(null);
+    (async () => {
+      try {
+        if (kind === 'section') {
+          await sectionApi.delete(id);
+          setSuccess('تم حذف الشعبة بنجاح');
+          await loadSections();
+        } else {
+          await courseApi.delete(id);
+          setSuccess('تم حذف المادة بنجاح');
+          await loadCourses();
+        }
+        setDeleteGuard(null);
+        setDeleteDeps(null);
+        setDeleteDepsError(null);
+      } catch (err) {
+        // The guard may be stale (something was created while the modal was
+        // open). Show the error and refresh the blockers list.
+        setDeleteDepsError(errorMessage(err));
+        try {
+          const fetcher =
+            kind === 'section' ? sectionApi.dependencies : courseApi.dependencies;
+          setDeleteDeps(await fetcher(id));
+        } catch {
+          // keep the error visible
+        }
+      } finally {
+        setActionLoading(false);
+      }
+    })();
+  };
+
   const handleDeleteSection = (section: SectionItem) => {
-    if (!window.confirm(`حذف الشعبة «${section.name}»؟ لا يمكن حذف شعبة تحتوي طلاباً.`)) return;
-    runAction(async () => {
-      await sectionApi.delete(section.id);
-      await loadSections();
-    }, 'تم حذف الشعبة');
+    const meta: string[] = [];
+    if (section.stage) meta.push(`المرحلة ${section.stage}`);
+    if (section.studyPeriod)
+      meta.push(section.studyPeriod === 'EVENING' ? 'مسائي' : 'صباحي');
+    openDeleteGuard(
+      'section',
+      section.id,
+      `الشعبة «${section.label || section.name}»`,
+      meta.join(' · '),
+    );
   };
 
   // ---------------- Course actions ----------------
@@ -422,11 +506,12 @@ export default function AcademicsPage() {
   };
 
   const handleDeleteCourse = (course: CourseItem) => {
-    if (!window.confirm(`حذف المادة «${course.name}»؟`)) return;
-    runAction(async () => {
-      await courseApi.delete(course.id);
-      await loadCourses();
-    }, 'تم حذف المادة');
+    openDeleteGuard(
+      'course',
+      course.id,
+      `${course.code} — ${course.name}`,
+      course.stage ? `المرحلة ${course.stage}` : undefined,
+    );
   };
 
   // ---------------- Assignment actions ----------------
@@ -2090,6 +2175,19 @@ export default function AcademicsPage() {
           </div>
         </div>
       )}
+
+      <DeleteGuardModal
+        isOpen={Boolean(deleteGuard)}
+        title={deleteGuard?.kind === 'course' ? 'حذف المادة' : 'حذف الشعبة'}
+        entityName={deleteGuard?.name || ''}
+        entityMeta={deleteGuard?.meta}
+        loading={deleteDepsLoading}
+        error={deleteDepsError}
+        dependencies={deleteDeps}
+        busy={actionLoading}
+        onClose={closeDeleteGuard}
+        onConfirm={confirmGuardedDelete}
+      />
 
       <style jsx>{`
         .academics-form-grid {

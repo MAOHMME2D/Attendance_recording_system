@@ -48,6 +48,12 @@ export class CourseController {
     return this.courseService.update(id, body, user);
   }
 
+  @Get(':id/dependencies')
+  @RequirePermissions(PERMISSIONS.COURSES_VIEW)
+  async dependencies(@Param('id') id: string) {
+    return this.courseService.dependencies(id);
+  }
+
   @Delete(':id')
   @RequirePermissions(PERMISSIONS.COURSES_MANAGE)
   async delete(

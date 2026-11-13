@@ -1,7 +1,15 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
-import { sectionApi, SectionItem, STUDY_PERIODS, STAGE_OPTIONS, STAGE_LABELS } from '../../lib/api';
+import {
+  sectionApi,
+  SectionItem,
+  STUDY_PERIODS,
+  STAGE_OPTIONS,
+  STAGE_LABELS,
+  type DeleteDependencies,
+} from '../../lib/api';
+import DeleteGuardModal from './DeleteGuardModal';
 
 interface SectionManagerModalProps {
   isOpen: boolean;
@@ -26,6 +34,13 @@ export default function SectionManagerModal({
   const [actionLoading, setActionLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
+
+  // Pre-flight delete check: the modal lists every blocker that has to be
+  // removed first, then asks for confirmation only when nothing blocks.
+  const [deleteCandidate, setDeleteCandidate] = useState<SectionItem | null>(null);
+  const [deleteDeps, setDeleteDeps] = useState<DeleteDependencies | null>(null);
+  const [deleteDepsLoading, setDeleteDepsLoading] = useState(false);
+  const [deleteDepsError, setDeleteDepsError] = useState<string | null>(null);
 
   const loadSections = async () => {
     setLoading(true);
@@ -86,28 +101,44 @@ export default function SectionManagerModal({
     }
   };
 
-  const handleDeleteSection = async (sec: SectionItem) => {
-    const confirmed = window.confirm(
-      `هل أنت متأكد من حذف الشعبة (${sec.label || sec.name}) من ${
-        sec.studyPeriod === 'EVENING' ? 'الدراسة المسائية' : 'الدراسة الصباحية'
-      } - ${STAGE_LABELS[sec.stage as 1 | 2 | 3 | 4]}؟`,
-    );
-    if (!confirmed) return;
+  const handleDeleteSection = (sec: SectionItem) => {
+    // Never delete directly: open the guard modal which lists the blockers.
+    setDeleteCandidate(sec);
+    setDeleteDeps(null);
+    setDeleteDepsError(null);
+    setDeleteDepsLoading(true);
+    sectionApi
+      .dependencies(sec.id)
+      .then((deps) => setDeleteDeps(deps))
+      .catch((err: any) => setDeleteDepsError(err?.message || 'فشل التحقق من الارتباطات'))
+      .finally(() => setDeleteDepsLoading(false));
+  };
+
+  const confirmDeleteSection = () => {
+    if (!deleteCandidate || !deleteDeps?.canDelete || actionLoading) return;
 
     setActionLoading(true);
     setError(null);
     setSuccessMsg(null);
 
-    try {
-      await sectionApi.delete(sec.id);
-      setSuccessMsg(`تم حذف الشعبة (${sec.name}) بنجاح`);
-      await loadSections();
-      if (onSectionsChanged) onSectionsChanged();
-    } catch (err: any) {
-      setError(err.message || 'فشل في حذف الشعبة');
-    } finally {
-      setActionLoading(false);
-    }
+    sectionApi
+      .delete(deleteCandidate.id)
+      .then(async () => {
+        setSuccessMsg(`تم حذف الشعبة (${deleteCandidate.name}) بنجاح`);
+        setDeleteCandidate(null);
+        setDeleteDeps(null);
+        await loadSections();
+        if (onSectionsChanged) onSectionsChanged();
+      })
+      .catch((err: any) => {
+        setDeleteDepsError(err?.message || 'فشل في حذف الشعبة');
+        // Refresh the blockers list in case it changed while the modal was open.
+        sectionApi
+          .dependencies(deleteCandidate.id)
+          .then((deps) => setDeleteDeps(deps))
+          .catch(() => {});
+      })
+      .finally(() => setActionLoading(false));
   };
 
   return (
@@ -455,7 +486,35 @@ export default function SectionManagerModal({
           </div>
         </div>
 
-        {/* Footer */}
+        <DeleteGuardModal
+        isOpen={Boolean(deleteCandidate)}
+        title="حذف الشعبة"
+        entityName={
+          deleteCandidate
+            ? `الشعبة «${deleteCandidate.label || deleteCandidate.name}»`
+            : ''
+        }
+        entityMeta={
+          deleteCandidate
+            ? `المرحلة ${deleteCandidate.stage} · ${
+                deleteCandidate.studyPeriod === 'EVENING' ? 'الدراسة المسائية' : 'الدراسة الصباحية'
+              }`
+            : undefined
+        }
+        loading={deleteDepsLoading}
+        error={deleteDepsError}
+        dependencies={deleteDeps}
+        busy={actionLoading}
+        onClose={() => {
+          if (actionLoading) return;
+          setDeleteCandidate(null);
+          setDeleteDeps(null);
+          setDeleteDepsError(null);
+        }}
+        onConfirm={confirmDeleteSection}
+      />
+
+      {/* Footer */}
         <div
           style={{
             padding: '14px 20px',

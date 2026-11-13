@@ -265,45 +265,15 @@ export class SectionService {
    * never detached implicitly.
    */
   async delete(id: string, actor: AuthenticatedUser) {
-    const section = await this.prisma.section.findUnique({
-      where: { id },
-      include: {
-        _count: { select: { students: true } },
-      },
-    });
-    if (!section) {
-      throw new NotFoundException('الشعبة غير موجودة');
-    }
+    const deps = await this.dependencies(id);
 
-    if (section._count.students > 0) {
-      throw new ConflictException(
-        'لا يمكن حذف الشعبة لأنها مرتبطة بطلاب. انقل الطلاب إلى شعبة أخرى أولاً.',
-      );
-    }
-
-    // Lectures reference the section by its text mirror. Match the same stage
-    // and study period so a section that already holds attendance history (or
-    // an archived lecture) cannot be removed.
-    const lectures = await this.prisma.lecture.findMany({
-      where: {
-        studyPeriod: section.studyPeriod,
-        OR: [{ course: { stage: section.stage } }, { courseId: null }],
-      },
-      select: { id: true, section: true },
-    });
-    const sectionKey = normalizeSection(section.name);
-    const linkedLecture = lectures.find((lecture) =>
-      String(lecture.section || '')
-        .split(',')
-        .map((part) => normalizeSection(part))
-        .filter(Boolean)
-        .includes(sectionKey),
-    );
-
-    if (linkedLecture) {
-      throw new ConflictException(
-        'لا يمكن حذف الشعبة لأنها مرتبطة بمحاضرات وسجلات حضور سابقة.',
-      );
+    if (!deps.canDelete) {
+      // Return the same structured blockers as the preflight endpoint so any
+      // caller can tell the user exactly what has to be removed first.
+      throw new ConflictException({
+        message: 'لا يمكن حذف الشعبة قبل إزالة الارتباطات التالية',
+        blockers: deps.blockers,
+      });
     }
 
     await this.prisma.section.delete({ where: { id } });
@@ -313,10 +283,124 @@ export class SectionService {
       action: 'SECTION_DELETE',
       entityType: 'Section',
       entityId: id,
-      details: `stage=${section.stage}, ${section.studyPeriod}, ${section.name}`,
+      details: `stage=${deps.stage}, ${deps.studyPeriod}, ${deps.name}`,
     });
 
-    this.logger.log(`Deleted section: stage ${section.stage} - ${section.studyPeriod} - ${section.name}`);
-    return { success: true, message: `تم حذف الشعبة (${section.name}) بنجاح` };
+    this.logger.log(
+      `Deleted section: stage ${deps.stage} - ${deps.studyPeriod} - ${deps.name}`,
+    );
+    return { success: true, message: `تم حذف الشعبة (${deps.name}) بنجاح` };
+  }
+
+  /**
+   * What still references this section, with the action needed to remove each
+   * blocker. The web app shows this list in a modal before any deletion.
+   */
+  async dependencies(id: string) {
+    const section = await this.prisma.section.findUnique({
+      where: { id },
+      include: {
+        _count: {
+          select: {
+            students: true,
+            lectureSections: { where: { lecture: { deletedAt: null } } },
+            timetableEntries: true,
+          },
+        },
+      },
+    });
+    if (!section) {
+      throw new NotFoundException('الشعبة غير موجودة');
+    }
+
+    // Lectures reference the section by its text mirror. Match the same stage
+    // and study period so a section that already holds attendance history (or
+    // an archived lecture) is reported as linked. Archived lectures are kept as
+    // a note only: they no longer block deleting the section.
+    const lectures = await this.prisma.lecture.findMany({
+      where: {
+        studyPeriod: section.studyPeriod,
+        deletedAt: null,
+        OR: [{ course: { stage: section.stage } }, { courseId: null }],
+      },
+      select: { id: true, section: true },
+    });
+    const sectionKey = normalizeSection(section.name);
+    const lectureIds = new Set(
+      lectures
+        .filter((lecture) =>
+          String(lecture.section || '')
+            .split(',')
+            .map((part) => normalizeSection(part))
+            .filter(Boolean)
+            .includes(sectionKey),
+        )
+        .map((lecture) => lecture.id),
+    );
+
+    // Lectures created through the timetable are linked by id as well.
+    if (section._count.lectureSections > 0) {
+      const links = await this.prisma.lectureSection.findMany({
+        where: { sectionId: id, lecture: { deletedAt: null } },
+        select: { lectureId: true },
+      });
+      for (const link of links) lectureIds.add(link.lectureId);
+    }
+
+    const blockers: Array<{
+      key: string;
+      count: number;
+      label: string;
+      action: string;
+    }> = [];
+
+    if (section._count.students > 0) {
+      blockers.push({
+        key: 'students',
+        count: section._count.students,
+        label: 'طلاب مرتبطون بهذه الشعبة',
+        action: 'انقل الطلاب إلى شعبة أخرى أو احذفهم، ثم أعد المحاولة',
+      });
+    }
+
+    if (lectureIds.size > 0) {
+      blockers.push({
+        key: 'lectures',
+        count: lectureIds.size,
+        label: 'محاضرات مرتبطة بالشعبة (وسجلات حضورها)',
+        action: 'احذف هذه المحاضرات من صفحة الحضور أولاً',
+      });
+    }
+
+    const notes: string[] = [];
+    if (section._count.timetableEntries > 0) {
+      notes.push(
+        `يوجد ${section._count.timetableEntries} موعد في الجدول الدراسي لهذه الشعبة وسيُحذف تلقائياً معها.`,
+      );
+    }
+    const archivedLectures = await this.prisma.lecture.count({
+      where: {
+        deletedAt: { not: null },
+        studyPeriod: section.studyPeriod,
+        OR: [{ course: { stage: section.stage } }, { courseId: null }],
+      },
+    });
+    if (archivedLectures > 0) {
+      notes.push(
+        `توجد ${archivedLectures} محاضرة محذوفة (مؤرشفة) لهذه الشعبة؛ سجلات حضورها محفوظة في التقارير.`,
+      );
+    }
+
+    return {
+      entity: 'SECTION' as const,
+      id: section.id,
+      name: section.name,
+      label: section.label,
+      stage: section.stage,
+      studyPeriod: section.studyPeriod,
+      canDelete: blockers.length === 0,
+      blockers,
+      notes,
+    };
   }
 }

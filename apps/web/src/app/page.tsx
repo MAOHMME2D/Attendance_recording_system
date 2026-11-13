@@ -1518,6 +1518,7 @@ function HomeContent() {
                 registeredAt: s.registeredAt,
                 studyPeriod: closedSummary.studyPeriod,
                 section: closedSummary.section,
+                note: s.note,
               })),
               ...(closedSummary.absentStudents || []).map((s) => ({
                 id: s.studentId,
@@ -1526,6 +1527,7 @@ function HomeContent() {
                 status: 'ABSENT',
                 studyPeriod: closedSummary.studyPeriod,
                 section: closedSummary.section,
+                note: s.note,
               })),
             ]}
           />

@@ -1330,6 +1330,71 @@ describe('phase 2 review regressions', () => {
     assert.equal(refreshed?.totalSessions, 0);
   });
 
+  it('permanently deletes a lecture together with its attendance records', async () => {
+    const section = await prisma.section.create({
+      data: { stage: 2, studyPeriod: 'MORNING', name: 'REG-PERM' },
+    });
+    assert.ok(userIds.lecturerA, 'lecturer A must exist in the test dataset');
+
+    const student = await prisma.student.create({
+      data: {
+        studentCode: `S2-PERM-${Date.now()}`,
+        name: 'طالب اختبار حذف نهائي',
+        stage: 2,
+        studyPeriod: 'MORNING',
+        sectionId: section.id,
+        section: section.name,
+      },
+    });
+    const lecture = await prisma.lecture.create({
+      data: {
+        name: 'محاضرة مؤقتة خاصة بالحذف',
+        studyPeriod: 'MORNING',
+        section: section.name,
+        courseId: ids.courseC1,
+        status: 'CLOSED',
+        qrToken: `reg-perm-${Date.now()}`,
+        qrExpiresAt: new Date(Date.now() + 3600_000),
+        createdByUserId: userIds.lecturerA!,
+        conductedByUserId: userIds.lecturerA!,
+        closedAt: new Date(),
+      },
+    });
+    await prisma.attendanceRecord.create({
+      data: {
+        lectureId: lecture.id,
+        studentId: student.id,
+        studentCode: student.studentCode,
+        studentName: student.name,
+        status: 'ABSENT',
+      },
+    });
+
+    const deleted = await api(`/api/lectures/${lecture.id}?permanent=true`, {
+      method: 'DELETE',
+      token: tokens.head!,
+    });
+    assert.equal(deleted.status, 200, JSON.stringify(deleted.body));
+    assert.equal(deleted.body.permanent, true);
+    assert.equal(deleted.body.attendanceRecords, 1);
+
+    const row = await prisma.lecture.findUnique({ where: { id: lecture.id } });
+    assert.equal(row, null, 'lecture must be removed from the table');
+    assert.equal(
+      await prisma.attendanceRecord.count({ where: { lectureId: lecture.id } }),
+      0,
+      'attendance records must be removed as well',
+    );
+
+    const refreshed = await prisma.student.findUnique({
+      where: { id: student.id },
+      select: { presentCount: true, absentCount: true, totalSessions: true },
+    });
+    assert.equal(refreshed?.presentCount, 0);
+    assert.equal(refreshed?.absentCount, 0);
+    assert.equal(refreshed?.totalSessions, 0);
+  });
+
   it('uses studentId as identity and allows duplicate names in one section (C2)', async () => {
     const section = await prisma.section.create({
       data: { stage: 2, studyPeriod: 'MORNING', name: 'REG-DUP' },
@@ -3008,5 +3073,202 @@ describe('registration privacy and current-section reports', () => {
       assert.equal(resetRes.body.academicStatus, 'REGULAR');
       assert.equal(resetRes.body.isCustom, false);
     });
+  });
+});
+
+describe('semester reset removes the semester lectures', () => {
+  it('deletes CLOSED lectures in scope, keeps OPEN ones and zeroes the counters', async () => {
+    const section = await prisma.section.create({
+      data: {
+        stage: 2,
+        studyPeriod: 'MORNING',
+        name: `SEM-RESET-${Date.now()}`,
+      },
+    });
+    const student = await prisma.student.create({
+      data: {
+        studentCode: `S2-SEM-${Date.now()}`,
+        name: 'طالب تصفير الفصل',
+        stage: 2,
+        studyPeriod: 'MORNING',
+        section: section.name,
+        sectionId: section.id,
+      },
+    });
+    const closed = await prisma.lecture.create({
+      data: {
+        name: 'محاضرة منتهية للتصفير',
+        studyPeriod: 'MORNING',
+        section: section.name,
+        sectionId: section.id,
+        courseId: ids.courseC1,
+        status: 'CLOSED',
+        qrToken: `sem-closed-${Date.now()}`,
+        qrExpiresAt: new Date(Date.now() + 3600_000),
+        createdByUserId: userIds.lecturerA,
+        conductedByUserId: userIds.lecturerA,
+        closedAt: new Date(),
+      },
+    });
+    const open = await prisma.lecture.create({
+      data: {
+        name: 'محاضرة مفتوحة للتصفير',
+        studyPeriod: 'MORNING',
+        section: section.name,
+        sectionId: section.id,
+        courseId: ids.courseC1,
+        status: 'ACTIVE',
+        qrToken: `sem-open-${Date.now()}`,
+        qrExpiresAt: new Date(Date.now() + 3600_000),
+        createdByUserId: userIds.lecturerA,
+        conductedByUserId: userIds.lecturerA,
+      },
+    });
+    await prisma.attendanceRecord.createMany({
+      data: [
+        {
+          lectureId: closed.id,
+          studentId: student.id,
+          studentCode: student.studentCode,
+          studentName: student.name,
+          status: 'ABSENT',
+        },
+        {
+          lectureId: open.id,
+          studentId: student.id,
+          studentCode: student.studentCode,
+          studentName: student.name,
+          status: 'PRESENT',
+        },
+      ],
+    });
+
+    const reset = await api('/api/students/reset-absences', {
+      method: 'POST',
+      token: tokens.head!,
+      body: {
+        stage: 2,
+        sectionId: section.id,
+        resetType: 'ALL_ATTENDANCE',
+      },
+    });
+    assert.equal(reset.status, 201, JSON.stringify(reset.body));
+    assert.equal(reset.body.count, 1);
+    assert.equal(reset.body.lectures, 1);
+
+    assert.equal(
+      await prisma.lecture.count({ where: { id: closed.id } }),
+      0,
+      'a closed lecture in the reset scope must be deleted',
+    );
+    assert.equal(
+      await prisma.lecture.count({ where: { id: open.id } }),
+      1,
+      'an OPEN lecture must survive a semester reset',
+    );
+    assert.equal(
+      await prisma.attendanceRecord.count({ where: { lectureId: closed.id } }),
+      0,
+    );
+    assert.equal(
+      await prisma.attendanceRecord.count({ where: { lectureId: open.id } }),
+      1,
+      'records of an OPEN lecture must never be deleted',
+    );
+
+    const stored = await prisma.student.findUnique({
+      where: { id: student.id },
+      select: { presentCount: true, absentCount: true, totalSessions: true },
+    });
+    assert.equal(stored?.presentCount, 0);
+    assert.equal(stored?.absentCount, 0);
+    assert.equal(stored?.totalSessions, 0);
+
+    // Remove the OPEN lecture fixture so later suites are unaffected.
+    await prisma.attendanceRecord.deleteMany({ where: { lectureId: open.id } });
+    await prisma.lecture.delete({ where: { id: open.id } });
+    await prisma.student.delete({ where: { id: student.id } });
+    await prisma.section.delete({ where: { id: section.id } });
+  });
+});
+
+describe('academic year reset', () => {
+  it('exposes a summary to permitted roles only', async () => {
+    const denied = await api('/api/system/academic-year-summary', {
+      token: tokens.lecturerA!,
+    });
+    assert.equal(denied.status, 403);
+
+    const registrarSummary = await api('/api/system/academic-year-summary', {
+      token: tokens.registrar!,
+    });
+    assert.equal(registrarSummary.status, 200, JSON.stringify(registrarSummary.body));
+
+    const summary = await api('/api/system/academic-year-summary', {
+      token: tokens.head!,
+    });
+    assert.equal(summary.status, 200, JSON.stringify(summary.body));
+    assert.ok(summary.body.students > 0);
+    assert.ok(summary.body.sections > 0);
+    assert.ok(summary.body.courses > 0);
+    assert.ok(summary.body.lectures > 0);
+    assert.equal(typeof summary.body.enrollments, 'number');
+  });
+
+  it('rejects a wrong confirmation phrase without deleting anything', async () => {
+    const before = await prisma.student.count();
+    const wrong = await api('/api/system/reset-academic-year', {
+      method: 'POST',
+      token: tokens.head!,
+      body: { confirm: 'نعم' },
+    });
+    assert.equal(wrong.status, 400);
+    assert.equal(await prisma.student.count(), before);
+  });
+
+  it('wipes academic data but keeps staff, settings and audit logs', async () => {
+    const staffBefore = await prisma.staffUser.count();
+    const settingsBefore = await prisma.systemSetting.count({
+      where: { NOT: { key: { startsWith: 'STUDENT_COURSES_' } } },
+    });
+
+    const reset = await api('/api/system/reset-academic-year', {
+      method: 'POST',
+      token: tokens.head!,
+      body: { confirm: 'بدء سنة دراسية جديدة' },
+    });
+    assert.equal(reset.status, 201, JSON.stringify(reset.body));
+    assert.equal(reset.body.success, true);
+    assert.ok(reset.body.deleted.students > 0);
+
+    assert.equal(await prisma.student.count(), 0);
+    assert.equal(await prisma.section.count(), 0);
+    assert.equal(await prisma.course.count(), 0);
+    assert.equal(await prisma.lecture.count(), 0);
+    assert.equal(await prisma.attendanceRecord.count(), 0);
+    assert.equal(await prisma.timetableEntry.count(), 0);
+    assert.equal(await prisma.teachingAssignment.count(), 0);
+    assert.equal(await prisma.studentQrToken.count(), 0);
+    assert.equal(
+      await prisma.systemSetting.count({
+        where: { key: { startsWith: 'STUDENT_COURSES_' } },
+      }),
+      0,
+    );
+
+    assert.equal(await prisma.staffUser.count(), staffBefore);
+    assert.equal(
+      await prisma.systemSetting.count({
+        where: { NOT: { key: { startsWith: 'STUDENT_COURSES_' } } },
+      }),
+      settingsBefore,
+    );
+
+    const audit = await prisma.auditLog.findFirst({
+      where: { action: 'ACADEMIC_YEAR_RESET' },
+      orderBy: { createdAt: 'desc' },
+    });
+    assert.ok(audit);
+    assert.match(String(audit?.details), /students=/);
   });
 });

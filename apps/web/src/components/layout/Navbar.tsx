@@ -49,6 +49,8 @@ export default function Navbar() {
   if (can(PERMISSIONS.MANAGE_STAFF)) {
     links.push({ href: '/staff', label: 'الموظفون' });
   }
+  // دليل الاستخدام متاح لكل الموظفين (خاصة التدريسيين) لشرح خطوات العمل.
+  links.push({ href: '/guide', label: 'دليل الاستخدام' });
 
   const isActive = (href: string) =>
     href === '/' ? pathname === '/' : pathname === href || pathname.startsWith(`${href}/`);
