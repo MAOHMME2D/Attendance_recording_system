@@ -7,17 +7,17 @@
   "scripts": {
     "dev": "next dev --port 3000 --hostname 0.0.0.0",
     "build": "next build && node copy-standalone-assets.js",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test",
     "start": "next start --port 3000 --hostname 0.0.0.0"
   },
   "dependencies": {
-    "@swc/helpers": "^0.5.23",
     "html5-qrcode": "^2.3.8",
-    "next": "^14.2.21",
+    "next": "^14.2.35",
     "qrcode.react": "^4.2.0",
     "react": "18.3.1",
     "react-dom": "18.3.1",
     "socket.io-client": "^4.8.1",
-    "styled-jsx": "^5.1.7",
     "xlsx": "^0.18.5"
   },
   "devDependencies": {

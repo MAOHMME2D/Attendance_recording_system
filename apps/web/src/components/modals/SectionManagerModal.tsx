@@ -1,13 +1,22 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
-import { sectionApi, SectionItem, STUDY_PERIODS } from '../../lib/api';
+import {
+  sectionApi,
+  SectionItem,
+  STUDY_PERIODS,
+  STAGE_OPTIONS,
+  STAGE_LABELS,
+  type DeleteDependencies,
+} from '../../lib/api';
+import DeleteGuardModal from './DeleteGuardModal';
 
 interface SectionManagerModalProps {
   isOpen: boolean;
   onClose: () => void;
   onSectionsChanged?: () => void;
   initialPeriod?: 'MORNING' | 'EVENING';
+  initialStage?: number;
 }
 
 export default function SectionManagerModal({
@@ -15,14 +24,23 @@ export default function SectionManagerModal({
   onClose,
   onSectionsChanged,
   initialPeriod = 'MORNING',
+  initialStage = 2,
 }: SectionManagerModalProps) {
   const [sections, setSections] = useState<SectionItem[]>([]);
   const [activeTab, setActiveTab] = useState<'MORNING' | 'EVENING'>(initialPeriod);
+  const [activeStage, setActiveStage] = useState<number>(initialStage);
   const [newSectionName, setNewSectionName] = useState('');
   const [loading, setLoading] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
+
+  // Pre-flight delete check: the modal lists every blocker that has to be
+  // removed first, then asks for confirmation only when nothing blocks.
+  const [deleteCandidate, setDeleteCandidate] = useState<SectionItem | null>(null);
+  const [deleteDeps, setDeleteDeps] = useState<DeleteDependencies | null>(null);
+  const [deleteDepsLoading, setDeleteDepsLoading] = useState(false);
+  const [deleteDepsError, setDeleteDepsError] = useState<string | null>(null);
 
   const loadSections = async () => {
     setLoading(true);
@@ -41,15 +59,18 @@ export default function SectionManagerModal({
     if (isOpen) {
       loadSections();
       setActiveTab(initialPeriod);
+      setActiveStage(initialStage);
       setNewSectionName('');
       setError(null);
       setSuccessMsg(null);
     }
-  }, [isOpen, initialPeriod]);
+  }, [isOpen, initialPeriod, initialStage]);
 
   if (!isOpen) return null;
 
-  const currentTabSections = sections.filter((s) => s.studyPeriod === activeTab);
+  const currentTabSections = sections.filter(
+    (s) => s.studyPeriod === activeTab && s.stage === activeStage,
+  );
 
   const handleAddSection = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -62,12 +83,15 @@ export default function SectionManagerModal({
 
     try {
       await sectionApi.create({
+        stage: activeStage,
         studyPeriod: activeTab,
         name: cleanName,
         label: `الشعبة ${cleanName}`,
       });
       setNewSectionName('');
-      setSuccessMsg(`تمت إضافة الشعبة (${cleanName}) بنجاح`);
+      setSuccessMsg(
+        `تمت إضافة الشعبة (${cleanName}) إلى ${STAGE_LABELS[activeStage as 1 | 2 | 3 | 4]}`,
+      );
       await loadSections();
       if (onSectionsChanged) onSectionsChanged();
     } catch (err: any) {
@@ -77,28 +101,44 @@ export default function SectionManagerModal({
     }
   };
 
-  const handleDeleteSection = async (sec: SectionItem) => {
-    const confirmed = window.confirm(
-      `هل أنت متأكد من حذف الشعبة (${sec.label || sec.name}) من ${
-        sec.studyPeriod === 'EVENING' ? 'الدراسة المسائية' : 'الدراسة الصباحية'
-      }؟`
-    );
-    if (!confirmed) return;
+  const handleDeleteSection = (sec: SectionItem) => {
+    // Never delete directly: open the guard modal which lists the blockers.
+    setDeleteCandidate(sec);
+    setDeleteDeps(null);
+    setDeleteDepsError(null);
+    setDeleteDepsLoading(true);
+    sectionApi
+      .dependencies(sec.id)
+      .then((deps) => setDeleteDeps(deps))
+      .catch((err: any) => setDeleteDepsError(err?.message || 'فشل التحقق من الارتباطات'))
+      .finally(() => setDeleteDepsLoading(false));
+  };
+
+  const confirmDeleteSection = () => {
+    if (!deleteCandidate || !deleteDeps?.canDelete || actionLoading) return;
 
     setActionLoading(true);
     setError(null);
     setSuccessMsg(null);
 
-    try {
-      await sectionApi.delete(sec.id);
-      setSuccessMsg(`تم حذف الشعبة (${sec.name}) بنجاح`);
-      await loadSections();
-      if (onSectionsChanged) onSectionsChanged();
-    } catch (err: any) {
-      setError(err.message || 'فشل في حذف الشعبة');
-    } finally {
-      setActionLoading(false);
-    }
+    sectionApi
+      .delete(deleteCandidate.id)
+      .then(async () => {
+        setSuccessMsg(`تم حذف الشعبة (${deleteCandidate.name}) بنجاح`);
+        setDeleteCandidate(null);
+        setDeleteDeps(null);
+        await loadSections();
+        if (onSectionsChanged) onSectionsChanged();
+      })
+      .catch((err: any) => {
+        setDeleteDepsError(err?.message || 'فشل في حذف الشعبة');
+        // Refresh the blockers list in case it changed while the modal was open.
+        sectionApi
+          .dependencies(deleteCandidate.id)
+          .then((deps) => setDeleteDeps(deps))
+          .catch(() => {});
+      })
+      .finally(() => setActionLoading(false));
   };
 
   return (
@@ -184,6 +224,43 @@ export default function SectionManagerModal({
           </button>
         </div>
 
+        {/* Stage Selector */}
+        <div
+          style={{
+            display: 'flex',
+            gap: '6px',
+            padding: '12px 20px 0',
+            flexWrap: 'wrap',
+          }}
+        >
+          {STAGE_OPTIONS.map((stage) => {
+            const isActive = activeStage === stage.value;
+            return (
+              <button
+                key={stage.value}
+                type="button"
+                onClick={() => {
+                  setActiveStage(stage.value);
+                  setError(null);
+                  setSuccessMsg(null);
+                }}
+                style={{
+                  padding: '6px 14px',
+                  borderRadius: '20px',
+                  border: isActive ? '1.5px solid #4F46E5' : '1px solid #D1D5DB',
+                  background: isActive ? '#EEF2FF' : '#FFFFFF',
+                  color: isActive ? '#4338CA' : '#4B5563',
+                  cursor: 'pointer',
+                  fontWeight: isActive ? '700' : '600',
+                  fontSize: '12.5px',
+                }}
+              >
+                {stage.label}
+              </button>
+            );
+          })}
+        </div>
+
         {/* Study Period Tabs */}
         <div
           style={{
@@ -266,7 +343,8 @@ export default function SectionManagerModal({
                 marginBottom: '6px',
               }}
             >
-              إضافة شعبة جديدة إلى ({activeTab === 'EVENING' ? 'الدراسة المسائية' : 'الدراسة الصباحية'}):
+              إضافة شعبة جديدة إلى ({STAGE_LABELS[activeStage as 1 | 2 | 3 | 4]} -{' '}
+              {activeTab === 'EVENING' ? 'الدراسة المسائية' : 'الدراسة الصباحية'}):
             </label>
             <div style={{ display: 'flex', gap: '8px' }}>
               <input
@@ -408,7 +486,35 @@ export default function SectionManagerModal({
           </div>
         </div>
 
-        {/* Footer */}
+        <DeleteGuardModal
+        isOpen={Boolean(deleteCandidate)}
+        title="حذف الشعبة"
+        entityName={
+          deleteCandidate
+            ? `الشعبة «${deleteCandidate.label || deleteCandidate.name}»`
+            : ''
+        }
+        entityMeta={
+          deleteCandidate
+            ? `المرحلة ${deleteCandidate.stage} · ${
+                deleteCandidate.studyPeriod === 'EVENING' ? 'الدراسة المسائية' : 'الدراسة الصباحية'
+              }`
+            : undefined
+        }
+        loading={deleteDepsLoading}
+        error={deleteDepsError}
+        dependencies={deleteDeps}
+        busy={actionLoading}
+        onClose={() => {
+          if (actionLoading) return;
+          setDeleteCandidate(null);
+          setDeleteDeps(null);
+          setDeleteDepsError(null);
+        }}
+        onConfirm={confirmDeleteSection}
+      />
+
+      {/* Footer */}
         <div
           style={{
             padding: '14px 20px',

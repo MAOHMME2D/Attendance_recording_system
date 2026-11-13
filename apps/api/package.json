@@ -8,12 +8,19 @@
     "build": "nest build",
     "dev": "nest start --watch",
     "start": "nest start",
-    "start:prod": "node dist/src/main",
+    "start:prod": "node dist/main.js",
     "db:generate": "prisma generate",
+    "db:generate:postgres": "prisma generate",
     "db:push": "prisma db push",
-    "db:seed": "tsx prisma/seed.ts",
     "db:studio": "prisma studio",
-    "db:migrate": "prisma migrate dev"
+    "db:migrate": "prisma migrate dev",
+    "db:migrate:postgres": "prisma migrate deploy",
+    "db:push:postgres": "prisma db push",
+    "staff:create": "tsx scripts/create-staff.ts",
+    "staff:disable-owner": "tsx scripts/disable-owner.ts",
+    "setup:initial": "tsx scripts/initial-setup.ts",
+    "test": "pnpm run build && tsx --test --test-concurrency=1 test/security.test.ts test/staff-management.test.ts test/phase2.test.ts test/reports.test.ts",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@nestjs/common": "^10.4.15",
@@ -22,8 +29,10 @@
     "@nestjs/platform-socket.io": "^10.4.15",
     "@nestjs/websockets": "^10.4.15",
     "@prisma/client": "^6.1.0",
+    "bcryptjs": "^3.0.3",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.14.1",
+    "dotenv": "^18.0.9",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1",
     "socket.io": "^4.8.1"
@@ -31,6 +40,7 @@
   "devDependencies": {
     "@nestjs/cli": "^10.4.9",
     "@nestjs/schematics": "^10.2.3",
+    "@types/bcryptjs": "^3.0.0",
     "@types/express": "^5.0.0",
     "@types/node": "^22.10.2",
     "prisma": "^6.1.0",

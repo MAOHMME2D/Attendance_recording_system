@@ -1,14 +1,15 @@
-'use client';
+﻿'use client';
 
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { lectureApi, attendanceApi, studentApi, sectionApi, SectionItem, MORNING_SECTIONS, EVENING_SECTIONS } from '../lib/api';
+import { lectureApi, attendanceApi, studentApi, sectionApi, courseApi, SectionItem, CourseItem, stageLabel, getWsBase, ApiError } from '../lib/api';
 import Link from 'next/link';
 import { io, Socket } from 'socket.io-client';
 import * as XLSX from 'xlsx';
 import CameraScanner from '../components/camera/CameraScanner';
 import Navbar from '../components/layout/Navbar';
-import SectionManagerModal from '../components/modals/SectionManagerModal';
 import AttendancePdfReportModal from '../components/modals/AttendancePdfReportModal';
+import RequireAuth from '../components/auth/RequireAuth';
+import { useAuth, PERMISSIONS } from '../lib/auth';
 import { formatAttendanceTime } from '../lib/formatTime';
 
 interface AttendanceRecord {
@@ -17,6 +18,7 @@ interface AttendanceRecord {
   studentCode?: string;
   status: string;
   registeredAt: string;
+  note?: string | null;
 }
 
 interface StudentOption {
@@ -27,14 +29,20 @@ interface StudentOption {
   section?: string;
 }
 
-export default function HomePage() {
-  // State for creating a new lecture
+function HomeContent() {
+  const { can } = useAuth();
+  const canManualAttendance = can(PERMISSIONS.ATTENDANCE_MANUAL);
+  const canLoadStudentOptions = can(PERMISSIONS.STUDENT_OPTIONS);
+
+  // State for creating a new lecture. A lecture is bound to one or more
+  // sections (by id): the backend rejects lectures without at least one.
   const [lectureName, setLectureName] = useState('');
   const [lectureStudyPeriod, setLectureStudyPeriod] = useState<'MORNING' | 'EVENING'>('MORNING');
-  const [selectedSections, setSelectedSections] = useState<string[]>([]); // empty array means ALL sections
+  const [selectedSectionIds, setSelectedSectionIds] = useState<string[]>([]);
   const [isCreating, setIsCreating] = useState(false);
   const [dbSections, setDbSections] = useState<SectionItem[]>([]);
-  const [showSectionModal, setShowSectionModal] = useState(false);
+  const [courses, setCourses] = useState<CourseItem[]>([]);
+  const [courseId, setCourseId] = useState('');
   const [showSummaryPdfModal, setShowSummaryPdfModal] = useState(false);
 
   // Load dynamic sections from database
@@ -51,26 +59,62 @@ export default function HomePage() {
     loadDynamicSections();
   }, [loadDynamicSections]);
 
-  // Sections definitions (dynamic with fallback to MORNING_SECTIONS / EVENING_SECTIONS)
-  const morningSections = dbSections.filter(s => s.studyPeriod === 'MORNING').length > 0
-    ? dbSections.filter(s => s.studyPeriod === 'MORNING').map(s => ({ value: s.name, label: s.label || `الشعبة ${s.name}` }))
-    : MORNING_SECTIONS;
+  // Courses are already scoped server-side: lecturers/technical lecturers get
+  // only the courses assigned to them, administrators get every course.
+  useEffect(() => {
+    courseApi
+      .getAll()
+      .then((data) => {
+        setCourses(data);
+        setCourseId((current) => {
+          if (current && data.some((course) => course.id === current)) return current;
+          return data.length === 1 ? data[0].id : '';
+        });
+      })
+      .catch(() => setCourses([]));
+  }, []);
 
-  const eveningSections = dbSections.filter(s => s.studyPeriod === 'EVENING').length > 0
-    ? dbSections.filter(s => s.studyPeriod === 'EVENING').map(s => ({ value: s.name, label: s.label || `الشعبة ${s.name}` }))
-    : EVENING_SECTIONS;
+  const selectedCourse = courses.find((course) => course.id === courseId) || null;
+  const courseStage = selectedCourse ? selectedCourse.stage : null;
 
-  const availableSections = lectureStudyPeriod === 'MORNING' ? morningSections : eveningSections;
+  // Sections are constrained by the selected course stage (and study period).
+  const stageSections = dbSections.filter(
+    (section) => courseStage === null || section.stage === courseStage,
+  );
 
-  const toggleSection = (secVal: string) => {
-    setSelectedSections((prev) => {
-      if (prev.includes(secVal)) {
-        return prev.filter((s) => s !== secVal);
-      } else {
-        return [...prev, secVal].sort((a, b) => Number(a) - Number(b));
-      }
-    });
-  };
+  // Pick a meaningful study period when the course only has sections in one of
+  // them (for example stage 2 is evening-only in the current data set).
+  useEffect(() => {
+    if (courseStage === null) return;
+    const matching = dbSections.filter((section) => section.stage === courseStage);
+    if (matching.length === 0) return;
+    setLectureStudyPeriod((current) =>
+      matching.some((section) => section.studyPeriod === current)
+        ? current
+        : (matching[0].studyPeriod as 'MORNING' | 'EVENING'),
+    );
+    setSelectedSectionIds([]);
+  }, [courseStage, dbSections]);
+
+  const availableSections = stageSections
+    .filter((section) => section.studyPeriod === lectureStudyPeriod)
+    .map((section) => ({
+      id: section.id,
+      name: section.name,
+      label: section.label || `الشعبة ${section.name}`,
+    }));
+
+  // Prune selections that no longer match the visible study period.
+  useEffect(() => {
+    setSelectedSectionIds((current) =>
+      current.filter((id) => availableSections.some((sec) => sec.id === id)),
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lectureStudyPeriod, courseStage, dbSections]);
+
+  const selectedSections = availableSections.filter((sec) =>
+    selectedSectionIds.includes(sec.id),
+  );
 
   // Active lecture state
   const [lecture, setLecture] = useState<any>(null);
@@ -92,6 +136,9 @@ export default function HomePage() {
     lectureName: string;
     studyPeriod?: string;
     section?: string;
+    courseCode?: string;
+    courseName?: string;
+    courseStage?: number;
     present: number;
     absent: number;
     total: number;
@@ -102,30 +149,65 @@ export default function HomePage() {
 
   // Socket ref
   const socketRef = useRef<Socket | null>(null);
+  // Realtime is optional (the page polls below). After a few failed attempts the
+  // socket is dropped silently instead of retrying forever.
+  const socketFailuresRef = useRef(0);
 
-  // Fetch pre-registered students for autocomplete
+  // Fetch the minimal student list used by the manual-attendance autocomplete.
+  // Technical lecturers and roles without STUDENT_OPTIONS never receive it.
   useEffect(() => {
-    studentApi.getAll().then((data) => {
+    if (!canLoadStudentOptions) {
+      setAllStudents([]);
+      return;
+    }
+    studentApi.getOptions().then((data) => {
       setAllStudents(data || []);
-    }).catch(() => {});
-  }, [lecture?.id]);
+    }).catch((err) => {
+      if (!(err instanceof ApiError) || (err.status !== 401 && err.status !== 403)) {
+        console.error('Failed to load student options:', err);
+      }
+    });
+  }, [canLoadStudentOptions, lecture?.id]);
 
-  // Connect to Socket.IO for real-time updates
+  // Connect to Socket.IO for real-time updates. The socket authenticates with
+  // the HttpOnly session cookie; anonymous sockets are rejected server-side.
   const connectSocket = useCallback((lectureId: string) => {
     if (socketRef.current) {
       socketRef.current.disconnect();
     }
 
-    const wsHost = typeof window !== 'undefined'
-      ? `${window.location.protocol}//${window.location.hostname}:3001`
-      : 'http://localhost:3001';
-
-    const socket = io(`${wsHost}/attendance`, {
-      transports: ['websocket', 'polling'],
+    const socket = io(`${getWsBase()}/attendance`, {
+      // Start with polling: it works through HTTP proxies (Vercel) and carries
+      // the same-origin session cookie. Socket.IO upgrades to WebSocket when the
+      // host supports it, so this is the safe order everywhere.
+      transports: ['polling', 'websocket'],
+      withCredentials: true,
     });
 
     socket.on('connect', () => {
+      socketFailuresRef.current = 0;
       socket.emit('lecture:join', { lectureId });
+    });
+
+    // A socket that cannot authenticate must NEVER bounce the user back to
+    // /login: the session cookie may be valid while the socket target is a
+    // different origin (host-scoped cookies are not sent there). Doing so made
+    // an authenticated session loop between "/" and "/login" forever.
+    socket.on('auth:error', () => {
+      socketFailuresRef.current = 3;
+      socket.disconnect();
+    });
+
+    socket.on('connect_error', () => {
+      socketFailuresRef.current += 1;
+      if (socketFailuresRef.current >= 3) {
+        // Give up on realtime; the polling fallback keeps attendance fresh.
+        socket.disconnect();
+      }
+    });
+
+    socket.on('lecture:join:denied', (payload: { message?: string }) => {
+      console.warn('Lecture room join denied:', payload?.message);
     });
 
     socket.on('attendance:new', (data: AttendanceRecord) => {
@@ -187,13 +269,24 @@ export default function HomePage() {
   // Create a new lecture
   const handleCreate = async () => {
     if (!lectureName.trim()) return;
+    if (!courseId) {
+      alert('اختر المادة قبل إنشاء المحاضرة');
+      return;
+    }
+    if (selectedSectionIds.length === 0) {
+      alert('اختر شعبة واحدة على الأقل قبل الإنشاء.');
+      return;
+    }
+    const primary = selectedSections[0];
     setIsCreating(true);
     try {
-      const sectionParam = selectedSections.length > 0 ? selectedSections.join(',') : undefined;
       const result = await lectureApi.create(
         lectureName.trim(),
         lectureStudyPeriod,
-        sectionParam
+        primary?.name,
+        courseId,
+        primary?.id,
+        selectedSectionIds,
       );
       setLecture(result);
       setAttendances([]);
@@ -216,6 +309,9 @@ export default function HomePage() {
         ...summary,
         studyPeriod: lecture?.studyPeriod,
         section: lecture?.section,
+        courseCode: lecture?.course?.code,
+        courseName: lecture?.course?.name,
+        courseStage: lecture?.course?.stage,
       });
       setLecture((prev: any) => (prev ? { ...prev, status: 'CLOSED' } : null));
       setSummaryTab(summary.absent > 0 ? 'absent' : 'present');
@@ -329,20 +425,31 @@ export default function HomePage() {
     };
   }, []);
 
-  // Filter students for manual search (Isolated to this lecture's Study Period & Section(s))
+  // Display names of the sections linked to the open lecture (multi-section).
+  const lectureSectionNames: string[] = (() => {
+    const current: any = lecture;
+    if (!current) return [];
+    if (Array.isArray(current.lectureSections) && current.lectureSections.length > 0) {
+      return current.lectureSections
+        .map((ls: any) => String(ls?.section?.name ?? ''))
+        .filter(Boolean);
+    }
+    if (current.sectionRef?.name) return [String(current.sectionRef.name)];
+    if (current.section) return [String(current.section)];
+    return [];
+  })();
+
+  // Filter students for manual search (Isolated to this lecture's Study Period
+  // and stage; the backend remains the authority on section/timetable
+  // eligibility when the record is written).
   const filteredStudentsForManual = manualSearch.trim()
     ? allStudents.filter((s: any) => {
         // Match study period
         if (lecture?.studyPeriod && (s.studyPeriod || 'MORNING') !== lecture.studyPeriod) {
           return false;
         }
-        // Match section if lecture is for specific section(s)
-        if (lecture?.section && lecture.section !== 'ALL') {
-          const targetSections = lecture.section.split(',').map((sec: string) => sec.trim().replace(/[^0-9]/g, '') || sec.trim());
-          const studentSec = String(s.section || '').trim().replace(/[^0-9]/g, '') || String(s.section || '').trim();
-          if (studentSec && !targetSections.includes(studentSec)) {
-            return false;
-          }
+        if (lecture?.course?.stage && Number(s.stage) !== Number(lecture.course.stage)) {
+          return false;
         }
         return (
           s.name.toLowerCase().includes(manualSearch.toLowerCase()) ||
@@ -369,10 +476,10 @@ export default function HomePage() {
       {/* Unified Header / Navbar Component */}
       <Navbar />
 
-      <div style={{ maxWidth: '1200px', margin: '0 auto', padding: '24px 20px' }}>
+      <div className="app-page">
         {/* If no active lecture, show create form */}
         {!lecture && (
-          <div className="animate-fade-in" style={{ maxWidth: '640px', margin: '50px auto', textAlign: 'center' }}>
+          <div className="animate-fade-in" style={{ maxWidth: '640px', margin: '20px auto', textAlign: 'center' }}>
             <div
               style={{
                 width: '68px',
@@ -402,6 +509,51 @@ export default function HomePage() {
             </p>
 
             <div style={{ background: '#FFFFFF', padding: '24px', borderRadius: '18px', border: '1px solid #E5E7EB', boxShadow: '0 4px 20px rgba(0,0,0,0.04)', textAlign: 'right' }}>
+              {/* Course Selection */}
+              <div style={{ marginBottom: '16px' }}>
+                <label style={{ display: 'block', fontSize: '13px', fontWeight: '700', color: '#374151', marginBottom: '6px' }}>
+                  المادة الدراسية:
+                </label>
+                <select
+                  className="input"
+                  value={courseId}
+                  onChange={(e) => {
+                    const value = e.target.value;
+                    setCourseId(value);
+                    setSelectedSectionIds([]);
+                    const picked = courses.find((course) => course.id === value);
+                    if (picked) {
+                      setLectureName((current) => {
+                        const trimmed = current.trim();
+                        if (!trimmed || courses.some((course) => course.name === trimmed)) {
+                          return picked.name;
+                        }
+                        return current;
+                      });
+                    }
+                  }}
+                  style={{ fontSize: '14px', fontWeight: '700', width: '100%', padding: '11px 14px' }}
+                >
+                  <option value="">اختر المادة...</option>
+                  {courses.map((course) => (
+                    <option key={course.id} value={course.id}>
+                      {stageLabel(course.stage)} — {course.code} — {course.name}
+                    </option>
+                  ))}
+                </select>
+                {courses.length === 0 ? (
+                  <div style={{ marginTop: '6px', fontSize: '12px', color: '#B45309', fontWeight: '600' }}>
+                    لم تُسند إليك أي مادة بعد. راجع إدارة التعيينات أو اطلب من رئيس القسم إسناد موادك.
+                  </div>
+                ) : (
+                  <div style={{ marginTop: '6px', fontSize: '12px', color: '#6B7280' }}>
+                    {selectedCourse
+                      ? `${stageLabel(selectedCourse.stage)} · رمز المادة ${selectedCourse.code}`
+                      : 'اختر المادة قبل بدء المحاضرة'}
+                  </div>
+                )}
+              </div>
+
               {/* Study Period Selection */}
               <div style={{ marginBottom: '16px' }}>
                 <label style={{ display: 'block', fontSize: '13px', fontWeight: '700', color: '#374151', marginBottom: '6px' }}>
@@ -412,7 +564,7 @@ export default function HomePage() {
                     type="button"
                     onClick={() => {
                       setLectureStudyPeriod('MORNING');
-                      setSelectedSections([]);
+                      setSelectedSectionIds([]);
                     }}
                     style={{
                       padding: '10px 14px',
@@ -436,7 +588,7 @@ export default function HomePage() {
                     type="button"
                     onClick={() => {
                       setLectureStudyPeriod('EVENING');
-                      setSelectedSections([]);
+                      setSelectedSectionIds([]);
                     }}
                     style={{
                       padding: '10px 14px',
@@ -459,60 +611,46 @@ export default function HomePage() {
                 </div>
               </div>
 
-              {/* Multi-Section Selection */}
+              {/* Section Selection: one or more sections per lecture */}
               <div style={{ marginBottom: '18px' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px', flexWrap: 'wrap', gap: '6px' }}>
                   <label style={{ fontSize: '13px', fontWeight: '700', color: '#374151' }}>
-                    الشُعب المستهدفة (يمكنك اختيار أكثر من شعبة):
+                    شعب المحاضرة (شعبة واحدة على الأقل):
                   </label>
-                  <div style={{ display: 'flex', gap: '6px' }}>
-                    <button
-                      type="button"
-                      onClick={() => setShowSectionModal(true)}
-                      title="إضافة أو حذف شُعب"
-                      style={{
-                        background: '#EEF2FF',
-                        color: '#4F46E5',
-                        border: '1px solid #C7D2FE',
-                        borderRadius: '6px',
-                        padding: '3px 10px',
-                        fontSize: '11px',
-                        fontWeight: '700',
-                        cursor: 'pointer',
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '4px',
-                      }}
-                    >
-                      ⚙️ إدارة الشُعب
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setSelectedSections([])}
-                      style={{
-                        background: selectedSections.length === 0 ? '#111827' : '#F3F4F6',
-                        color: selectedSections.length === 0 ? '#FFFFFF' : '#4B5563',
-                        border: selectedSections.length === 0 ? '1px solid #111827' : '1px solid #D1D5DB',
-                        borderRadius: '6px',
-                        padding: '3px 10px',
-                        fontSize: '11px',
-                        fontWeight: '700',
-                        cursor: 'pointer',
-                      }}
-                    >
-                      {selectedSections.length === 0 ? '✓ تم تحديد كافة الشُعب' : 'تحديد كافة الشُعب'}
-                    </button>
-                  </div>
                 </div>
 
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(130px, 1fr))', gap: '8px' }}>
-                  {availableSections.map((sec) => {
-                    const isSelected = selectedSections.includes(sec.value);
+                  {availableSections.length === 0 ? (
+                    <div
+                      style={{
+                        gridColumn: '1 / -1',
+                        padding: '12px 14px',
+                        borderRadius: '10px',
+                        background: '#FFFBEB',
+                        border: '1px solid #FCD34D',
+                        color: '#92400E',
+                        fontSize: '12.5px',
+                        fontWeight: '600',
+                      }}
+                    >
+                      لا توجد شعب مسجّلة لهذه المرحلة في{' '}
+                      {lectureStudyPeriod === 'MORNING' ? 'الدراسة الصباحية' : 'الدراسة المسائية'}.
+                      أضف الشعب من «إدارة الشُعب» أو اختر نوع دراسة آخر.
+                    </div>
+                  ) : (
+                    availableSections.map((sec) => {
+                    const isSelected = selectedSectionIds.includes(sec.id);
                     return (
                       <button
-                        key={sec.value}
+                        key={sec.id}
                         type="button"
-                        onClick={() => toggleSection(sec.value)}
+                        onClick={() =>
+                          setSelectedSectionIds((current) =>
+                            isSelected
+                              ? current.filter((id) => id !== sec.id)
+                              : [...current, sec.id],
+                          )
+                        }
                         style={{
                           padding: '10px 12px',
                           borderRadius: '10px',
@@ -552,22 +690,29 @@ export default function HomePage() {
                             fontWeight: '800',
                           }}
                         >
-                          {isSelected ? '✓' : sec.value}
+                          {isSelected ? '✓' : sec.name}
                         </span>
                       </button>
                     );
-                  })}
+                    })
+                  )}
                 </div>
 
                 {/* Selection Summary */}
                 <div style={{ fontSize: '12px', color: '#6B7280', marginTop: '10px', background: '#F9FAFB', padding: '8px 12px', borderRadius: '8px', border: '1px solid #F3F4F6' }}>
-                  {selectedSections.length === 0 ? (
+                  {availableSections.length === 0 ? null : selectedSections.length > 0 ? (
                     <span style={{ color: '#059669', fontWeight: '600' }}>
-                      ✓ سيتم شمول كافة شُعب {lectureStudyPeriod === 'MORNING' ? 'الصباحي (1 - 3)' : 'المسائي (1 - 8)'} معاً في هذه المحاضرة
+                      ✓ المحاضرة مخصصة لـ{' '}
+                      <strong style={{ color: '#111827' }}>
+                        {selectedSections.map((sec) => sec.label).join('، ')}
+                      </strong>{' '}
+                      من{' '}
+                      {selectedCourse ? `${stageLabel(selectedCourse.stage)} ` : ''}
+                      {lectureStudyPeriod === 'MORNING' ? 'الصباحية' : 'المسائية'}
                     </span>
                   ) : (
-                    <span>
-                      🎯 الشُعب المختارة معاً: <strong style={{ color: '#111827' }}>{selectedSections.map(s => `شعبة ${s}`).join(' + ')}</strong> ({selectedSections.length} شُعب مشتركة)
+                    <span style={{ color: '#B45309', fontWeight: '600' }}>
+                      ⚠️ اختر شعبة واحدة على الأقل. يمكن اختيار أكثر من شعبة لنفس المحاضرة.
                     </span>
                   )}
                 </div>
@@ -576,12 +721,12 @@ export default function HomePage() {
               {/* Lecture Name Input */}
               <div style={{ marginBottom: '20px' }}>
                 <label style={{ display: 'block', fontSize: '13px', fontWeight: '700', color: '#374151', marginBottom: '6px' }}>
-                  اسم المادة / المحاضرة:
+                  اسم المحاضرة / العنوان:
                 </label>
                 <input
                   type="text"
                   className="input"
-                  placeholder="مثال: الكيمياء السريرية، الأحياء المجهرية، أمراض الدم..."
+                  placeholder="مثال: محاضرة 1 — الكيمياء السريرية"
                   value={lectureName}
                   onChange={(e) => setLectureName(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && handleCreate()}
@@ -594,7 +739,7 @@ export default function HomePage() {
               <button
                 className="btn btn-primary"
                 onClick={handleCreate}
-                disabled={isCreating || !lectureName.trim()}
+                disabled={isCreating || !lectureName.trim() || !courseId || selectedSectionIds.length === 0}
                 style={{ width: '100%', fontSize: '15px', fontWeight: '800', padding: '12px 20px' }}
                 id="create-lecture-btn"
               >
@@ -628,6 +773,21 @@ export default function HomePage() {
                   <h1 style={{ fontSize: '22px', fontWeight: '800', color: '#111827', margin: 0 }}>
                     {lecture.name}
                   </h1>
+                  {lecture.course && (
+                    <span
+                      style={{
+                        padding: '3px 10px',
+                        borderRadius: '6px',
+                        fontSize: '11px',
+                        fontWeight: '700',
+                        background: '#FEF3C7',
+                        color: '#92400E',
+                        border: '1px solid #FCD34D',
+                      }}
+                    >
+                      {stageLabel(lecture.course.stage)} · {lecture.course.code} — {lecture.course.name}
+                    </span>
+                  )}
                   <span
                     style={{
                       padding: '3px 10px',
@@ -641,26 +801,7 @@ export default function HomePage() {
                   >
                     {(lecture.studyPeriod || 'MORNING') === 'EVENING' ? 'دراسة مسائية' : 'دراسة صباحية'}
                   </span>
-                  {lecture.section ? (
-                    <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}>
-                      {lecture.section.split(',').map((secItem: string) => (
-                        <span
-                          key={secItem}
-                          style={{
-                            padding: '3px 9px',
-                            borderRadius: '6px',
-                            fontSize: '11px',
-                            fontWeight: '700',
-                            background: '#F3F4F6',
-                            color: '#1F2937',
-                            border: '1px solid #D1D5DB',
-                          }}
-                        >
-                          شعبة {secItem.trim()}
-                        </span>
-                      ))}
-                    </div>
-                  ) : (
+                  {lectureSectionNames.length > 0 && (
                     <span
                       style={{
                         padding: '3px 9px',
@@ -668,11 +809,26 @@ export default function HomePage() {
                         fontSize: '11px',
                         fontWeight: '700',
                         background: '#F3F4F6',
-                        color: '#4B5563',
+                        color: '#1F2937',
                         border: '1px solid #D1D5DB',
                       }}
                     >
-                      كافة الشُعب
+                      شعب {lectureSectionNames.join('، ')}
+                    </span>
+                  )}
+                  {lecture.conductedBy && (
+                    <span
+                      style={{
+                        padding: '3px 9px',
+                        borderRadius: '6px',
+                        fontSize: '11px',
+                        fontWeight: '700',
+                        background: '#FFF7ED',
+                        color: '#9A3412',
+                        border: '1px solid #FED7AA',
+                      }}
+                    >
+                      المشرف: {lecture.conductedBy.fullName}
                     </span>
                   )}
                   <span
@@ -710,6 +866,7 @@ export default function HomePage() {
 
             {/* Main Grid: Direct Camera Scanner + Attendance List */}
             <div
+              className="lecture-main-grid"
               style={{
                 display: 'grid',
                 gridTemplateColumns: lecture.status === 'ACTIVE' ? 'minmax(420px, 480px) 1fr' : '1fr',
@@ -744,7 +901,8 @@ export default function HomePage() {
                   </div>
                 </div>
 
-                {/* Searchable Manual Add Section */}
+                {/* Searchable Manual Add Section (requires ATTENDANCE_MANUAL) */}
+                {canManualAttendance && (
                 <div style={{ position: 'relative', marginBottom: '18px' }}>
                   <div style={{ fontSize: '12px', fontWeight: '700', color: '#374151', marginBottom: '6px' }}>
                     إضافة حضور يدوي (ابحث بالاسم أو الباركود):
@@ -914,6 +1072,7 @@ export default function HomePage() {
                     </div>
                   )}
                 </div>
+                )}
 
                 {/* Attendance Table */}
                 {attendances.length === 0 ? (
@@ -923,7 +1082,8 @@ export default function HomePage() {
                     </p>
                   </div>
                 ) : (
-                  <div style={{ maxHeight: '420px', overflowY: 'auto' }}>
+                  <>
+                  <div className="attendance-table-wrap">
                     <table className="attendance-table" style={{ fontSize: '13px' }}>
                       <thead>
                         <tr>
@@ -932,14 +1092,23 @@ export default function HomePage() {
                           <th>الباركود</th>
                           <th style={{ textAlign: 'center' }}>الحالة</th>
                           <th>وقت التسجيل</th>
-                          <th style={{ textAlign: 'center', width: '70px' }}>تعديل</th>
+                          {canManualAttendance && lecture.status === 'ACTIVE' && (
+                            <th style={{ textAlign: 'center', width: '70px' }}>تعديل</th>
+                          )}
                         </tr>
                       </thead>
                       <tbody>
                         {attendances.map((record, index) => (
                           <tr key={record.id} className="animate-fade-in">
                             <td style={{ color: 'var(--text-muted)', fontWeight: '600' }}>{index + 1}</td>
-                            <td style={{ fontWeight: '700', color: '#111827' }}>{record.studentName}</td>
+                            <td style={{ fontWeight: '700', color: '#111827' }}>
+                              {record.studentName}
+                              {record.note && (
+                                <span style={{ display: 'block', fontSize: '10px', fontWeight: '600', color: '#6D28D9' }}>
+                                  {record.note}
+                                </span>
+                              )}
+                            </td>
                             <td>
                               <span style={{ fontFamily: 'monospace', fontSize: '12px', color: '#4B5563' }}>
                                 {record.studentCode || '-'}
@@ -964,20 +1133,73 @@ export default function HomePage() {
                                 {formatAttendanceTime(record.registeredAt)}
                               </span>
                             </td>
-                            <td style={{ textAlign: 'center' }}>
-                              <button
-                                className="btn btn-ghost btn-sm"
-                                onClick={() => handleToggle(record.id)}
-                                style={{ padding: '3px 8px', fontSize: '11px' }}
-                              >
-                                تبديل
-                              </button>
-                            </td>
+                            {canManualAttendance && lecture.status === 'ACTIVE' && (
+                              <td style={{ textAlign: 'center' }}>
+                                <button
+                                  className="btn btn-ghost btn-sm"
+                                  onClick={() => handleToggle(record.id)}
+                                  style={{ padding: '3px 8px', fontSize: '11px' }}
+                                >
+                                  تبديل
+                                </button>
+                              </td>
+                            )}
                           </tr>
                         ))}
                       </tbody>
                     </table>
                   </div>
+
+                  {/* Mobile: one compact card per student */}
+                  <div className="attendance-mobile-list">
+                    {attendances.map((record) => (
+                      <div key={record.id} className="attendance-mobile-item">
+                        <div style={{ minWidth: 0, flex: 1 }}>
+                          <div style={{ fontWeight: '700', color: '#111827', fontSize: '14px', lineHeight: 1.5 }}>
+                            {record.studentName}
+                            {record.note && (
+                              <span style={{ display: 'block', fontSize: '10.5px', fontWeight: '600', color: '#6D28D9' }}>
+                                {record.note}
+                              </span>
+                            )}
+                          </div>
+                          <div style={{ display: 'flex', gap: '10px', alignItems: 'center', marginTop: '2px', flexWrap: 'wrap' }}>
+                            <span style={{ fontFamily: 'monospace', fontSize: '11px', color: '#6B7280' }}>
+                              {record.studentCode || '-'}
+                            </span>
+                            <span dir="ltr" style={{ fontSize: '11px', color: '#6B7280' }}>
+                              {formatAttendanceTime(record.registeredAt)}
+                            </span>
+                          </div>
+                        </div>
+                        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px', flexShrink: 0 }}>
+                          <span
+                            style={{
+                              padding: '3px 12px',
+                              borderRadius: '999px',
+                              fontSize: '11.5px',
+                              fontWeight: '800',
+                              background: record.status === 'PRESENT' ? '#ECFDF5' : '#FEF2F2',
+                              color: record.status === 'PRESENT' ? '#065F46' : '#991B1B',
+                              border: record.status === 'PRESENT' ? '1px solid #A7F3D0' : '1px solid #FECACA',
+                            }}
+                          >
+                            {record.status === 'PRESENT' ? 'حاضر' : 'غائب'}
+                          </span>
+                          {canManualAttendance && lecture.status === 'ACTIVE' && (
+                            <button
+                              className="btn btn-ghost btn-sm"
+                              onClick={() => handleToggle(record.id)}
+                              style={{ padding: '4px 14px', fontSize: '11px', minHeight: '34px' }}
+                            >
+                              تبديل
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  </>
                 )}
               </div>
             </div>
@@ -1106,6 +1328,13 @@ export default function HomePage() {
                   <p style={{ color: 'var(--text-secondary)', fontSize: '14px', marginTop: '4px' }}>
                     {closedSummary.lectureName} • تم توثيق الحضور وتثبيت غياب بقية الطلاب
                   </p>
+                  {(closedSummary.courseCode || closedSummary.courseName) && (
+                    <p style={{ color: '#92400E', fontSize: '12.5px', marginTop: '4px', fontWeight: '700' }}>
+                      {closedSummary.courseStage ? `${stageLabel(closedSummary.courseStage)} · ` : ''}
+                      {closedSummary.courseCode || ''}
+                      {closedSummary.courseName ? ` — ${closedSummary.courseName}` : ''}
+                    </p>
+                  )}
                 </div>
                 <button
                   className="btn btn-ghost btn-sm"
@@ -1168,7 +1397,7 @@ export default function HomePage() {
               </div>
 
               {/* Student List in Table */}
-              <div style={{ maxHeight: '280px', overflowY: 'auto', border: '1px solid #E5E7EB', borderRadius: '10px', marginBottom: '20px' }}>
+              <div className="attendance-scroll" style={{ maxHeight: '280px', border: '1px solid #E5E7EB', borderRadius: '10px', marginBottom: '20px' }}>
                 {summaryTab === 'absent' ? (
                   closedSummary.absentStudents?.length === 0 ? (
                     <div style={{ padding: '24px', textAlign: 'center', color: '#059669', fontWeight: '700', fontSize: '14px' }}>
@@ -1220,7 +1449,14 @@ export default function HomePage() {
                         {closedSummary.presentStudents.map((s, idx) => (
                           <tr key={s.id || idx}>
                             <td style={{ textAlign: 'center', color: 'var(--text-muted)' }}>{idx + 1}</td>
-                            <td style={{ fontWeight: '700', color: '#111827' }}>{s.studentName}</td>
+                            <td style={{ fontWeight: '700', color: '#111827' }}>
+                              {s.studentName}
+                              {s.note && (
+                                <span style={{ display: 'block', fontSize: '10px', fontWeight: '600', color: '#6D28D9' }}>
+                                  {s.note}
+                                </span>
+                              )}
+                            </td>
                             <td style={{ fontFamily: 'monospace', color: '#4B5563' }}>{s.studentCode || '-'}</td>
                             <td style={{ color: '#6B7280', fontSize: '12px', textAlign: 'center' }}>
                               <span dir="ltr" style={{ unicodeBidi: 'isolate', display: 'inline-block' }}>
@@ -1243,19 +1479,10 @@ export default function HomePage() {
               {/* Modal Actions */}
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px' }}>
                 <button
-                  className="btn btn-primary"
+                  className="btn btn-success btn-sm"
                   onClick={() => setShowSummaryPdfModal(true)}
                   id="export-summary-pdf-btn"
-                  style={{
-                    fontSize: '13px',
-                    fontWeight: '700',
-                    backgroundColor: '#DC2626',
-                    borderColor: '#DC2626',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '6px',
-                    boxShadow: '0 2px 6px rgba(220, 38, 38, 0.25)',
-                  }}
+                  title="تصدير كشف الحضور والغياب بصيغة PDF الرسمية"
                 >
                   📄 تصدير كشف الحضور والغياب (PDF)
                 </button>
@@ -1271,14 +1498,6 @@ export default function HomePage() {
             </div>
           </div>
         )}
-        {/* Section Management Modal */}
-        <SectionManagerModal
-          isOpen={showSectionModal}
-          onClose={() => setShowSectionModal(false)}
-          onSectionsChanged={loadDynamicSections}
-          initialPeriod={lectureStudyPeriod}
-        />
-
         {/* Closed Lecture Attendance & Absences PDF Modal */}
         {closedSummary && (
           <AttendancePdfReportModal
@@ -1299,6 +1518,7 @@ export default function HomePage() {
                 registeredAt: s.registeredAt,
                 studyPeriod: closedSummary.studyPeriod,
                 section: closedSummary.section,
+                note: s.note,
               })),
               ...(closedSummary.absentStudents || []).map((s) => ({
                 id: s.studentId,
@@ -1307,11 +1527,24 @@ export default function HomePage() {
                 status: 'ABSENT',
                 studyPeriod: closedSummary.studyPeriod,
                 section: closedSummary.section,
+                note: s.note,
               })),
             ]}
           />
         )}
       </div>
     </div>
+  );
+}
+
+/**
+ * Phase 1: the attendance workspace is available only to authenticated staff
+ * who hold LECTURE_CONDUCT (all four roles do; students have no accounts).
+ */
+export default function HomePage() {
+  return (
+    <RequireAuth permission={PERMISSIONS.LECTURE_CONDUCT}>
+      <HomeContent />
+    </RequireAuth>
   );
 }

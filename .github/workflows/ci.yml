@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Build, typecheck and API tests
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: attendance
+          POSTGRES_PASSWORD: attendance_ci_password
+          POSTGRES_DB: attendance_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U attendance -d attendance_ci"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      # CI-only credentials. No production secret is used in this workflow.
+      DATABASE_URL: postgresql://attendance:attendance_ci_password@localhost:5432/attendance_ci?schema=public
+      DATABASE_ADMIN_URL: postgresql://attendance:attendance_ci_password@localhost:5432/postgres
+      COOKIE_SECURE: 'false'
+      NEXT_TELEMETRY_DISABLED: '1'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.28.2
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies (lockfile unchanged)
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate Prisma client
+        run: pnpm --filter @attendance/api run db:generate:postgres
+
+      - name: Apply Prisma migrations
+        run: pnpm --filter @attendance/api exec prisma migrate deploy
+
+      - name: TypeScript check (API)
+        run: pnpm --filter @attendance/api run typecheck
+
+      - name: TypeScript check (web)
+        run: pnpm --filter @attendance/web run typecheck
+
+      - name: API integration tests
+        run: pnpm --filter @attendance/api test
+
+      - name: Build web (production)
+        run: pnpm --filter @attendance/web run build
