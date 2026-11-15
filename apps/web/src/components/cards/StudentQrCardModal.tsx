@@ -1,7 +1,8 @@
 'use client';
 
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
+import { studentApi, ApiError } from '../../lib/api';
 
 interface StudentData {
   id: string;
@@ -18,9 +19,50 @@ interface StudentQrCardModalProps {
 }
 
 export default function StudentQrCardModal({ student, onClose }: StudentQrCardModalProps) {
+  const [activeToken, setActiveToken] = useState<string | null>(null);
+  const [loadingToken, setLoadingToken] = useState(false);
+  const [tokenError, setTokenError] = useState<string | null>(null);
+  const [rotating, setRotating] = useState(false);
+  const [rotateError, setRotateError] = useState<string | null>(null);
+
+  const studentId = student?.id;
+
+  useEffect(() => {
+    if (!studentId) return;
+    let cancelled = false;
+
+    setActiveToken(null);
+    setTokenError(null);
+    setRotateError(null);
+    setRotating(false);
+    setLoadingToken(true);
+
+    studentApi
+      .getQr(studentId)
+      .then((result) => {
+        if (!cancelled) setActiveToken(result.token);
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        setTokenError(
+          error instanceof ApiError
+            ? error.message
+            : 'تعذر تحميل رمز QR لهذا الطالب.',
+        );
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingToken(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [studentId]);
+
   if (!student) return null;
 
   const handlePrint = () => {
+    if (!activeToken) return;
     const originalTitle = document.title;
     const safeName = student.name.replace(/\s+/g, '_');
     document.title = `بطاقة_حضور_${safeName}_${student.studentCode}`;
@@ -28,6 +70,28 @@ export default function StudentQrCardModal({ student, onClose }: StudentQrCardMo
     setTimeout(() => {
       document.title = originalTitle;
     }, 1000);
+  };
+
+  const handleRotate = async () => {
+    const confirmed = window.confirm(
+      'إعادة إصدار رمز QR ستُبطل البطاقة المطبوعة حالياً. هل تريد المتابعة؟',
+    );
+    if (!confirmed) return;
+
+    setRotating(true);
+    setRotateError(null);
+    try {
+      const result = await studentApi.rotateQr(student.id);
+      setActiveToken(result.token);
+    } catch (error) {
+      if (error instanceof ApiError) {
+        setRotateError(error.message);
+      } else {
+        setRotateError('تعذر إعادة إصدار رمز QR. حاول مرة أخرى.');
+      }
+    } finally {
+      setRotating(false);
+    }
   };
 
   return (
@@ -153,16 +217,25 @@ export default function StudentQrCardModal({ student, onClose }: StudentQrCardMo
               display: 'inline-block',
               margin: '0 auto 14px auto',
               boxShadow: '0 4px 20px rgba(0,0,0,0.25)',
+              minWidth: '262px',
+              minHeight: '262px',
+              verticalAlign: 'middle',
             }}
           >
-            <QRCodeSVG
-              value={student.studentCode}
-              size={230}
-              level="M"
-              marginSize={2}
-              bgColor="#FFFFFF"
-              fgColor="#0A0A0A"
-            />
+            {activeToken ? (
+              <QRCodeSVG
+                value={activeToken}
+                size={230}
+                level="M"
+                marginSize={2}
+                bgColor="#FFFFFF"
+                fgColor="#0A0A0A"
+              />
+            ) : (
+              <div style={{ color: '#111827', fontSize: '13px', fontWeight: '700', padding: '100px 10px' }}>
+                {loadingToken ? 'جارٍ تحميل رمز QR...' : 'رمز QR غير متاح'}
+              </div>
+            )}
           </div>
 
           {/* Student Info */}
@@ -188,12 +261,47 @@ export default function StudentQrCardModal({ student, onClose }: StudentQrCardMo
           </p>
         </div>
 
+        {tokenError && (
+          <div
+            className="no-print"
+            style={{
+              marginTop: '12px',
+              background: '#FEF2F2',
+              border: '1px solid #FECACA',
+              color: '#991B1B',
+              borderRadius: '10px',
+              padding: '8px 12px',
+              fontSize: '12px',
+            }}
+          >
+            {tokenError}
+          </div>
+        )}
+
+        {rotateError && (
+          <div
+            className="no-print"
+            style={{
+              marginTop: '12px',
+              background: '#FEF2F2',
+              border: '1px solid #FECACA',
+              color: '#991B1B',
+              borderRadius: '10px',
+              padding: '8px 12px',
+              fontSize: '12px',
+            }}
+          >
+            {rotateError}
+          </div>
+        )}
+
         {/* Action Buttons (Hidden in Print) */}
-        <div className="no-print" style={{ display: 'flex', gap: '10px', marginTop: '18px' }}>
+        <div className="no-print" style={{ display: 'flex', gap: '10px', marginTop: '18px', flexWrap: 'wrap' }}>
           <button
             className="btn btn-primary"
             onClick={handlePrint}
-            style={{ flex: 1, fontSize: '13.5px', background: '#059669', borderColor: '#059669', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}
+            disabled={!activeToken}
+            style={{ flex: 1, fontSize: '13.5px', background: '#059669', borderColor: '#059669', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', opacity: activeToken ? 1 : 0.6 }}
           >
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
@@ -211,9 +319,31 @@ export default function StudentQrCardModal({ student, onClose }: StudentQrCardMo
           </button>
         </div>
 
+        <button
+          type="button"
+          className="no-print"
+          onClick={handleRotate}
+          disabled={rotating || !activeToken}
+          style={{
+            marginTop: '10px',
+            width: '100%',
+            padding: '8px 12px',
+            borderRadius: '10px',
+            border: '1px solid #FCA5A5',
+            background: '#FEF2F2',
+            color: '#991B1B',
+            fontSize: '12.5px',
+            fontWeight: '700',
+            cursor: rotating || !activeToken ? 'not-allowed' : 'pointer',
+            opacity: rotating || !activeToken ? 0.7 : 1,
+          }}
+        >
+          {rotating ? 'جارٍ إعادة الإصدار...' : 'إعادة إصدار رمز QR (إبطال البطاقة الحالية)'}
+        </button>
+
         {/* Small Tip */}
         <div className="no-print" style={{ marginTop: '10px', textAlign: 'center', fontSize: '11.5px', color: '#6B7280' }}>
-          💡 اختر <strong>"حفظ بتنسيق PDF" (Save as PDF)</strong> من نافذة المتصفح لتنزيل البطاقة كملف PDF
+          💡 اختر <strong>&quot;حفظ بتنسيق PDF&quot; (Save as PDF)</strong> من نافذة المتصفح لتنزيل البطاقة كملف PDF
         </div>
       </div>
     </div>

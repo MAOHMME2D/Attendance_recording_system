@@ -129,5 +129,41 @@ if (fs.existsSync(standaloneDir)) {
     } catch (_) {}
   }
 
+  // Next's standalone output can leave symlinks in the copied node_modules
+  // (for example `next` and `react`). A later `next build` cleans .next and on
+  // Windows can follow those links, deleting files from the root node_modules.
+  // Every package is already present as a real directory one level up, so drop
+  // the links to keep builds safe.
+  function removeSymlinks(dir) {
+    let removed = 0;
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const entryPath = path.join(dir, entry.name);
+      let stat;
+      try {
+        stat = fs.lstatSync(entryPath);
+      } catch (_) {
+        continue;
+      }
+      if (stat.isSymbolicLink()) {
+        try {
+          fs.unlinkSync(entryPath);
+          removed += 1;
+        } catch (_) {}
+      } else if (stat.isDirectory()) {
+        removed += removeSymlinks(entryPath);
+      }
+    }
+    return removed;
+  }
+
+  try {
+    const removed = removeSymlinks(standaloneDir);
+    if (removed > 0) {
+      console.log(
+        `[Standalone] Removed ${removed} symlink(s) so future builds cannot delete packages outside .next.`,
+      );
+    }
+  } catch (_) {}
+
   console.log('[Standalone] All standalone assets and dependencies verified successfully.');
 }

@@ -1,11 +1,21 @@
 /**
- * Normalizes Arabic section names to standard numeric string ("1" to "8")
+ * Normalizes section names for comparison.
+ *
+ * Numeric names ("1".."8", Arabic-Indic digits, and Arabic ordinal words) keep
+ * their historical representation. Alphanumeric names such as "A1" are kept
+ * intact instead of being reduced to "1".
  */
 export function normalizeSection(sec?: string | null): string {
   if (!sec) return '';
-  const s = String(sec).trim().replace(/^(شعبة|الشعبة)\s*/i, '').trim();
-  const num = s.replace(/[^0-9]/g, '');
-  if (num) return num;
+  let s = String(sec).trim().replace(/^(شعبة|الشعبة)\s*/i, '').trim();
+  if (!s) return '';
+
+  // Fold Arabic-Indic digits into ASCII so "١" and "1" compare equal.
+  s = s.replace(/[٠-٩]/g, (digit) => String('٠١٢٣٤٥٦٧٨٩'.indexOf(digit)));
+
+  // Pure numeric names ("1", "01", "12").
+  if (/^\d+$/.test(s)) return s;
+
   const map: Record<string, string> = {
     'الاولى': '1', 'الأولى': '1', 'الاول': '1', 'الأول': '1', 'اولى': '1', 'أولى': '1', 'اول': '1', 'أول': '1', 'واحد': '1', '١': '1',
     'الثانية': '2', 'الثاني': '2', 'ثانية': '2', 'ثاني': '2', 'اثنين': '2', 'إثنين': '2', '٢': '2',

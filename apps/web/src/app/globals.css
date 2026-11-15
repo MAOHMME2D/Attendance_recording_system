@@ -65,6 +65,7 @@
 
 html {
   scroll-behavior: smooth;
+  overflow-x: clip;
 }
 
 body {
@@ -343,9 +344,12 @@ body {
 
 .nav-bar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  padding: 14px 28px;
+  column-gap: 16px;
+  row-gap: 10px;
+  padding: 12px 28px;
   background: #0A0A0A;
   border-bottom: 2px solid var(--gold);
   position: sticky;
@@ -431,6 +435,74 @@ body {
   background: linear-gradient(135deg, var(--gold-light), var(--gold));
   color: #0A0A0A;
   font-weight: 700;
+}
+
+.nav-right {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.nav-user-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(255, 255, 255, 0.12);
+  padding: 5px 12px;
+  border-radius: 20px;
+  font-size: 11.5px;
+  color: #F3F4F6;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1);
+}
+
+.nav-user-name {
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nav-logout {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  color: #F3F4F6;
+  border-radius: 20px;
+  padding: 5px 14px;
+  font-size: 11.5px;
+  font-weight: 700;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.nav-logout:hover {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.nav-menu-toggle {
+  display: none;
+  align-items: center;
+  gap: 6px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  color: #F3F4F6;
+  border-radius: 12px;
+  padding: 8px 14px;
+  font-size: 13px;
+  font-weight: 700;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.nav-menu-icon {
+  font-size: 16px;
+  line-height: 1;
+}
+
+.nav-mobile-panel {
+  display: none;
 }
 
 /* ================ TABLE ================ */
@@ -588,14 +660,99 @@ body {
 
 /* ================ RESPONSIVE ================ */
 
+@media (max-width: 900px) {
+  /* Active lecture: stack the camera scanner above the attendance panel so the
+     fixed 420px scanner column never forces horizontal scrolling on tablets
+     and phones. */
+  .lecture-main-grid {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+
+  .nav-desktop-links,
+  .nav-user-chip,
+  .nav-logout {
+    display: none;
+  }
+
+  .nav-menu-toggle {
+    display: inline-flex;
+    min-height: 44px;
+  }
+
+  .nav-mobile-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    /* Take a full row of their own so the open panel never squashes the
+       logo and the toggle button on the first line. */
+    flex-basis: 100%;
+    width: 100%;
+    margin-top: 2px;
+    padding-top: 12px;
+    order: 10;
+    border-top: 1px solid rgba(255, 255, 255, 0.14);
+  }
+
+  .nav-mobile-link {
+    display: block;
+    padding: 11px 14px;
+    border-radius: 10px;
+    color: #D1D5DB;
+    text-decoration: none;
+    font-size: 15px;
+    font-weight: 600;
+  }
+
+  .nav-mobile-link:hover {
+    background: rgba(255, 255, 255, 0.08);
+    color: #FFFFFF;
+  }
+
+  .nav-mobile-link.active {
+    background: linear-gradient(135deg, var(--gold-light), var(--gold));
+    color: #0A0A0A;
+    font-weight: 700;
+  }
+
+  .nav-mobile-user {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 14px;
+    margin-top: 6px;
+    border-radius: 10px;
+    background: rgba(255, 255, 255, 0.06);
+    color: #F3F4F6;
+    font-size: 12.5px;
+  }
+
+  .nav-mobile-logout {
+    margin-top: 6px;
+    padding: 10px 14px;
+    border-radius: 10px;
+    background: rgba(220, 38, 38, 0.15);
+    border: 1px solid rgba(248, 113, 113, 0.4);
+    color: #FCA5A5;
+    font-family: inherit;
+    font-size: 14px;
+    font-weight: 700;
+    cursor: pointer;
+  }
+}
+
 @media (max-width: 768px) {
   .nav-bar {
-    padding: 12px 16px;
+    padding: 10px 14px;
+    column-gap: 10px;
+    row-gap: 8px;
   }
 
   .nav-logo {
     font-size: 16px;
     gap: 10px;
+    flex: 1 1 auto;
+    min-width: 0;
   }
 
   .nav-brand-mark {
@@ -627,13 +784,232 @@ body {
 
 @media (max-width: 640px) {
   .nav-brand-mark {
-    height: 44px;
-    max-width: calc(100vw - 32px);
+    height: 40px;
+    max-width: calc(100vw - 140px);
   }
 
   .nav-brand-rule,
   .nav-brand-copy {
     display: none;
+  }
+
+  .nav-right {
+    flex-wrap: nowrap;
+    gap: 8px;
+  }
+
+  .nav-menu-toggle {
+    padding: 8px 12px;
+    font-size: 12.5px;
+  }
+}
+
+/* ================ APP SHELL & TOUCH POLISH ================ */
+
+/* Shared page container. Pages add the class to their top-level wrapper so
+   padding stays comfortable on phones. */
+.app-page {
+  width: 100%;
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 24px 20px 48px;
+}
+
+.app-page-narrow {
+  width: 100%;
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 24px 20px 48px;
+}
+
+/* Toolbar rows of header action buttons (students / reports pages). */
+.page-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* 2-column action grid used by compact mobile cards. */
+.mobile-action-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  width: 100%;
+}
+
+@media (max-width: 640px) {
+  .app-page,
+  .app-page-narrow {
+    padding: 16px 14px 40px !important;
+  }
+
+  /* iOS Safari zooms the whole page when an input is focused with a
+     font-size below 16px — keep every form control at 16px on phones. */
+  .input,
+  input.input,
+  select.input,
+  textarea.input,
+  input[type='text'].input,
+  input[type='search'].input,
+  input[type='number'].input,
+  input[type='password'].input {
+    font-size: 16px !important;
+    min-height: 46px;
+  }
+
+  /* Comfortable touch targets for buttons on phones. */
+  .btn {
+    min-height: 44px;
+  }
+
+  .btn-sm {
+    min-height: 40px;
+    padding: 8px 14px;
+  }
+
+  /* Header action buttons become a tidy 2-column grid instead of a
+     ragged wrap of different widths. */
+  .page-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    width: 100%;
+  }
+
+  .page-actions > * {
+    width: 100%;
+  }
+
+  .page-actions > :only-child {
+    grid-column: 1 / -1;
+  }
+
+  /* Search + action rows stack vertically and go full width on phones. */
+  .page-actions-row {
+    flex-direction: column !important;
+    align-items: stretch !important;
+  }
+
+  .page-actions-row > .input {
+    max-width: none !important;
+    width: 100%;
+    flex: none !important;
+  }
+
+  /* Modals get breathing room without side gaps. */
+  .modal-backdrop {
+    padding: 12px !important;
+  }
+
+  /* Long-tap targets inside compact card action areas. */
+  .mobile-action-grid .btn {
+    min-height: 46px;
+    font-size: 13px;
+    padding: 8px 10px;
+  }
+}
+
+/* ================ STUDENT / STAFF / ACADEMICS ACTION ROWS ================ */
+
+/* These rows are rendered by helper functions inside the pages, where the
+   styled-jsx scope class is not applied — keep them global. */
+.student-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.staff-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.academics-card-actions .btn {
+  min-height: 44px;
+}
+
+@media (max-width: 720px) {
+  .staff-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    width: 100%;
+    gap: 8px;
+  }
+
+  .staff-actions .btn {
+    width: 100%;
+    min-height: 44px;
+    font-size: 13px;
+  }
+}
+
+@media (max-width: 860px) {
+  /* 2x2 grid inside each mobile student card. */
+  .student-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    width: 100%;
+  }
+
+  .student-actions .btn {
+    min-height: 46px;
+    width: 100%;
+  }
+}
+
+@media (max-width: 560px) {
+  /* Keep the pair of buttons at natural width, adjacent — stretching ghost
+     buttons full-width reads as two unrelated text links. */
+  .academics-card-actions .btn {
+    flex: none;
+    min-height: 46px;
+  }
+}
+
+/* ================ ATTENDANCE LIST (lecture page) ================ */
+
+.attendance-table-wrap {
+  max-height: 420px;
+  overflow-y: auto;
+}
+
+.attendance-mobile-list {
+  display: none;
+}
+
+.attendance-scroll {
+  overflow: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.attendance-scroll .attendance-table {
+  min-width: 520px;
+}
+
+@media (max-width: 720px) {
+  .attendance-table-wrap {
+    display: none;
+  }
+
+  .attendance-mobile-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    max-height: 440px;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .attendance-mobile-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 10px;
+    background: #FFFFFF;
+    border: 1px solid #E5E7EB;
+    border-radius: 10px;
   }
 }
 
@@ -890,3 +1266,141 @@ body {
   }
 }
 
+
+/* ================ REPORT PRINT MODE (Phase 4) ================ */
+.report-print-sheet {
+  display: none;
+}
+
+@media print {
+  html.report-print-mode body > *:not(.report-print-root) {
+    display: none !important;
+  }
+
+  html.report-print-mode body > .report-print-root {
+    display: block !important;
+    position: static !important;
+    background: #FFFFFF !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    height: auto !important;
+    max-height: none !important;
+    overflow: visible !important;
+  }
+
+  .report-print-root,
+  .report-print-root .report-print-sheet {
+    display: block !important;
+    visibility: visible !important;
+  }
+
+  .report-print-sheet {
+    width: 100% !important;
+    color: #111827 !important;
+    background: #FFFFFF !important;
+    font-family: 'Cairo', sans-serif !important;
+    font-size: 11px !important;
+    direction: rtl !important;
+  }
+
+  .report-print-sheet table {
+    width: 100% !important;
+    border-collapse: collapse !important;
+    page-break-inside: auto !important;
+  }
+
+  .report-print-sheet thead {
+    display: table-header-group !important;
+  }
+
+  .report-print-sheet tr {
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+  }
+
+  .report-print-sheet th,
+  .report-print-sheet td {
+    border: 1px solid #1F2937 !important;
+    padding: 6px 7px !important;
+    font-size: 10px !important;
+    text-align: right !important;
+  }
+
+  .report-print-sheet th {
+    background: #F3F4F6 !important;
+    font-weight: 800 !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  .report-print-sheet .report-print-header {
+    display: flex !important;
+    justify-content: space-between !important;
+    align-items: flex-start !important;
+    gap: 12px !important;
+    border-bottom: 2.5px solid #111827 !important;
+    padding-bottom: 10px !important;
+    margin-bottom: 12px !important;
+  }
+
+  .report-print-sheet .report-print-title {
+    font-size: 17px !important;
+    font-weight: 800 !important;
+    color: #111827 !important;
+    margin: 0 !important;
+  }
+
+  .report-print-sheet .report-print-sub {
+    font-size: 10px !important;
+    color: #4B5563 !important;
+    margin-top: 3px !important;
+    line-height: 1.6 !important;
+  }
+
+  .report-print-sheet .report-print-stamp {
+    font-size: 9px !important;
+    color: #6B7280 !important;
+    text-align: left !important;
+    line-height: 1.7 !important;
+  }
+
+  .report-print-sheet .report-print-filters {
+    background: #F9FAFB !important;
+    border: 1px solid #E5E7EB !important;
+    border-radius: 6px !important;
+    padding: 6px 10px !important;
+    font-size: 9.5px !important;
+    color: #374151 !important;
+    margin-bottom: 10px !important;
+    line-height: 1.8 !important;
+  }
+
+  .report-print-sheet .report-print-stats {
+    display: grid !important;
+    grid-template-columns: repeat(4, 1fr) !important;
+    gap: 8px !important;
+    margin-bottom: 12px !important;
+  }
+
+  .report-print-sheet .report-print-stat {
+    border: 1px solid #E5E7EB !important;
+    border-radius: 6px !important;
+    padding: 6px 10px !important;
+    text-align: center !important;
+  }
+
+  .report-print-sheet .report-print-stat b {
+    display: block !important;
+    font-size: 16px !important;
+    color: #111827 !important;
+  }
+
+  .report-print-sheet .report-print-stat span {
+    font-size: 9px !important;
+    color: #6B7280 !important;
+  }
+}
+
+@media (max-width: 900px) {
+  .dashboard-grid-2 { grid-template-columns: minmax(0, 1fr) !important; }
+}

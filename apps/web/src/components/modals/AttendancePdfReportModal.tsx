@@ -17,6 +17,8 @@ export interface AttendancePdfRecord {
   totalLectures?: number;
   status?: string; // 'PRESENT' | 'ABSENT'
   registeredAt?: string;
+  /** e.g. «حاضر عبر الشعبة 2» when a student attended another section of the same course. */
+  note?: string | null;
 }
 
 interface AttendancePdfReportModalProps {
@@ -273,10 +275,10 @@ export default function AttendancePdfReportModal({
                     وزارة التعليم العالي والبحث العلمي
                   </div>
                   <div style={{ fontSize: '13.5px', fontWeight: '800', color: NAVY, lineHeight: '1.7' }}>
-                    جامعة الفرات الأوسط التقنية
+                    جامعة الفرات الأوسط
                   </div>
                   <div style={{ fontSize: '13px', fontWeight: '800', color: GOLD, lineHeight: '1.7' }}>
-                    الكلية التقنية / كربلاء
+                    كلية البوليتكنك
                   </div>
                 </div>
 
@@ -317,10 +319,10 @@ export default function AttendancePdfReportModal({
                     Ministry of Higher Education
                   </div>
                   <div style={{ fontSize: '11px', fontWeight: '700', color: NAVY, lineHeight: '1.7' }}>
-                    Al-Furat Al-Awsat Technical Univ.
+                    Al-Furat Al-Awsat University
                   </div>
                   <div style={{ fontSize: '11px', fontWeight: '700', color: GOLD, lineHeight: '1.7' }}>
-                    Technical College / Karbala
+                    Polytechnic College
                   </div>
                 </div>
               </div>
@@ -490,6 +492,7 @@ export default function AttendancePdfReportModal({
                     <>
                       <th style={{ border: `1.5px solid ${NAVY}`, padding: '9px 8px', width: '85px', textAlign: 'center', fontWeight: '700' }}>الحالة</th>
                       <th style={{ border: `1.5px solid ${NAVY}`, padding: '9px 8px', width: '100px', textAlign: 'center', fontWeight: '700' }}>وقت التسجيل</th>
+                      <th style={{ border: `1.5px solid ${NAVY}`, padding: '9px 8px', width: '150px', textAlign: 'center', fontWeight: '700' }}>الملاحظات</th>
                     </>
                   ) : (
                     <>
@@ -504,7 +507,7 @@ export default function AttendancePdfReportModal({
                 {sheetRecords.length === 0 ? (
                   <tr>
                     <td
-                      colSpan={isLectureSession ? 6 : 7}
+                      colSpan={7}
                       style={{ border: '1px solid #D1D5DB', textAlign: 'center', padding: '20px', color: '#6B7280' }}
                     >
                       لا توجد بيانات متاحة في هذا الكشف
@@ -547,6 +550,9 @@ export default function AttendancePdfReportModal({
                               <span dir="ltr" style={{ unicodeBidi: 'isolate', display: 'inline-block' }}>
                                 {formatAttendanceTime(r.registeredAt)}
                               </span>
+                            </td>
+                            <td style={{ border: `1px solid ${NAVY}40`, padding: '7px 8px', fontSize: '11px', fontWeight: '700', color: r.note ? '#B45309' : '#9CA3AF', lineHeight: 1.5 }}>
+                              {r.note || ''}
                             </td>
                           </>
                         ) : (

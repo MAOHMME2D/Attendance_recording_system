@@ -1,73 +1,264 @@
+// RUNTIME DATABASE IS POSTGRESQL.
+// Migrations live in prisma/migrations/ (0001_init, 0002_online_foundation,
+// See docs/POSTGRES_MIGRATION.md.
 datasource db {
-  provider = "sqlite"
-  url      = "file:./attendance.db"
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
 }
 
 generator client {
   provider = "prisma-client-js"
 }
 
-// A single lecture session
 model Lecture {
-  id            String   @id @default(uuid())
-  name          String            // e.g. "Mathematics - Section A"
-  studyPeriod   String   @default("MORNING") // MORNING = صباحي, EVENING = مسائي
-  section       String?           // الشعبة المرتبطة بالمحاضرة
-  status        String   @default("ACTIVE")  // ACTIVE or CLOSED
-  qrToken       String   @unique  // current active QR token
-  qrExpiresAt   DateTime          // when the current QR token expires
-  startedAt     DateTime @default(now())
-  closedAt      DateTime?
-  createdAt     DateTime @default(now())
+  id                String   @id @default(uuid())
+  name              String
+  studyPeriod       String   @default("MORNING")
+  section           String?
+  sectionId         String?
+  courseId          String?
+  status            String   @default("ACTIVE")
+  qrToken           String   @unique
+  qrExpiresAt       DateTime
+  createdByUserId   String?
+  conductedByUserId String?
+  startedAt         DateTime @default(now())
+  closedAt          DateTime?
+  /// Soft-delete marker: archived lectures keep their attendance records.
+  deletedAt         DateTime?
+  createdAt         DateTime @default(now())
 
-  attendances   AttendanceRecord[]
+  attendances AttendanceRecord[]
+  course      Course?          @relation(fields: [courseId], references: [id], onDelete: SetNull)
+  sectionRef  Section?         @relation(fields: [sectionId], references: [id], onDelete: SetNull)
+  createdBy   StaffUser?       @relation("LectureCreator", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  conductedBy StaffUser?       @relation("LectureConductor", fields: [conductedByUserId], references: [id], onDelete: SetNull)
+  lectureSections LectureSection[]
+
+  @@index([createdByUserId])
+  @@index([conductedByUserId])
+  @@index([courseId])
+  @@index([sectionId])
+  @@index([deletedAt])
 }
 
-// Pre-registered student in the college database
 model Student {
-  id           String             @id @default(uuid())
-  orderIndex   Int?               // الترتيب من عمود A في الإكسل
-  studentCode  String             @unique // الباركود / الرقم التعريفي الفريد ID (عمود G)
-  name         String             // اسم الطالب (عمود B)
-  studyPeriod  String             @default("MORNING") // MORNING = صباحي, EVENING = مسائي
-  section      String?            // الشعبة (عمود C)
-  presentCount Int                @default(0) // عدد مرات الحضور (عمود D)
-  absentCount  Int                @default(0) // عدد مرات الغياب (عمود E)
-  totalSessions Int?              // إجمالي المحاضرات (عمود F)
-  rate         Float?             // نسبة الحضور % (اختياري للتوافق القديم)
-  createdAt    DateTime           @default(now())
-  updatedAt    DateTime           @updatedAt
+  id            String   @id @default(uuid())
+  orderIndex    Int?
+  studentCode   String   @unique
+  name          String
+  stage         Int      @default(2)
+  studyPeriod   String   @default("MORNING")
+  section       String?
+  sectionId     String?
+  presentCount  Int      @default(0)
+  absentCount   Int      @default(0)
+  totalSessions Int?
+  rate          Float?
+  deletedAt     DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
 
-  attendances  AttendanceRecord[]
+  attendances AttendanceRecord[]
+  qrTokens    StudentQrToken[]
+  sectionRef  Section?         @relation(fields: [sectionId], references: [id], onDelete: SetNull)
+
+  @@index([stage, sectionId])
+  @@index([deletedAt])
 }
 
-// A student attendance record
 model AttendanceRecord {
-  id           String    @id @default(uuid())
+  id           String   @id @default(uuid())
   lectureId    String
-  studentId    String?             // relation to Student (optional)
-  studentCode  String?             // student ID / code used to register
-  studentName  String              // student's name
-  status       String    @default("PRESENT")  // PRESENT, ABSENT
-  deviceId     String?             // unique hardware/browser device fingerprint
-  ipAddress    String?             // client IP address
-  registeredAt DateTime  @default(now())
-  createdAt    DateTime  @default(now())
+  studentId    String?
+  studentCode  String?
+  studentName  String
+  status       String   @default("PRESENT")
+  deviceId     String?
+  ipAddress    String?
+  registeredAt DateTime @default(now())
+  createdAt    DateTime @default(now())
+  /// Present with a note, e.g. attended another section's session of the
+  /// same course ("حاضر عبر الشعبة 2"). NULL for ordinary records.
+  note         String?
 
-  lecture      Lecture   @relation(fields: [lectureId], references: [id])
-  student      Student?  @relation(fields: [studentId], references: [id], onDelete: SetNull)
+  lecture Lecture  @relation(fields: [lectureId], references: [id])
+  student Student? @relation(fields: [studentId], references: [id], onDelete: SetNull)
 
-  @@unique([lectureId, studentName])  // prevent duplicate student name in same lecture
+  // Identity is the student row, never the display name: two students may
+  // share a name in the same section. Legacy rows with a NULL studentId are
+  // allowed because PostgreSQL treats NULLs as distinct in unique indexes.
+  @@unique([lectureId, studentId])
+  @@index([studentId])
 }
 
-// Defined college section per study period
 model Section {
   id          String   @id @default(uuid())
-  studyPeriod String   @default("MORNING") // MORNING or EVENING
-  name        String   // "1", "2", "3", "A", etc.
-  label       String?  // "الشعبة الأولى", etc.
+  stage       Int      @default(2)
+  studyPeriod String   @default("MORNING")
+  name        String
+  label       String?
   createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 
-  @@unique([studyPeriod, name])
+  students Student[]
+  lectures Lecture[]
+  lectureSections LectureSection[]
+  timetableEntries TimetableEntry[]
+
+  @@unique([stage, studyPeriod, name])
+  @@index([stage, studyPeriod])
 }
 
+/// Academic subject. A course belongs to one stage; sections are chosen when a
+/// lecture is created and lecturers are assigned to the course itself.
+model Course {
+  id          String   @id @default(uuid())
+  code        String
+  name        String
+  stage       Int
+  description String?
+  type        String?  @default("THEORETICAL")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  lectures    Lecture[]
+  assignments TeachingAssignment[]
+  timetableEntries TimetableEntry[]
+
+  @@unique([stage, code])
+  @@index([stage])
+}
+
+/// Grants a lecturer (or technical lecturer) permission to teach a course.
+model TeachingAssignment {
+  id          String   @id @default(uuid())
+  staffUserId String
+  courseId    String
+  createdAt   DateTime @default(now())
+
+  staffUser StaffUser @relation(fields: [staffUserId], references: [id], onDelete: Cascade)
+  course    Course    @relation(fields: [courseId], references: [id], onDelete: Cascade)
+
+  @@unique([staffUserId, courseId])
+  @@index([courseId])
+}
+
+model StaffUser {
+  id               String    @id @default(uuid())
+  staffId          String    @unique
+  fullName         String
+  role             String
+  passwordHash     String
+  isActive         Boolean   @default(true)
+  failedLoginCount Int       @default(0)
+  lockedUntil      DateTime?
+  lastLoginAt      DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  sessions          StaffSession[]
+  auditLogs         AuditLog[]
+  createdLectures   Lecture[]       @relation("LectureCreator")
+  conductedLectures Lecture[]       @relation("LectureConductor")
+  createdQrTokens   StudentQrToken[]
+  assignments       TeachingAssignment[]
+}
+
+model StaffSession {
+  id         String    @id @default(uuid())
+  userId     String
+  tokenHash  String    @unique
+  expiresAt  DateTime
+  revokedAt  DateTime?
+  ipAddress  String?
+  userAgent  String?
+  createdAt  DateTime  @default(now())
+  lastUsedAt DateTime?
+
+  user StaffUser @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model AuditLog {
+  id          String   @id @default(uuid())
+  actorUserId String?
+  action      String
+  entityType  String
+  entityId    String?
+  details     String?
+  ipAddress   String?
+  createdAt   DateTime @default(now())
+
+  actor StaffUser? @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@index([actorUserId])
+  @@index([createdAt])
+}
+
+model StudentQrToken {
+  id              String    @id @default(uuid())
+  studentId       String
+  token           String    @unique
+  revokedAt       DateTime?
+  createdByUserId String?
+  createdAt       DateTime  @default(now())
+
+  student   Student    @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  createdBy StaffUser? @relation(fields: [createdByUserId], references: [id], onDelete: SetNull)
+
+  @@index([studentId])
+  @@index([revokedAt])
+}
+
+model SystemSetting {
+  key       String   @id
+  value     String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+/// Link between a lecture and the sections it covers. One lecture may now
+/// serve several sections (e.g. the same course held for sections 1 and 2 in
+/// one sitting). `Lecture.sectionId` is kept as the primary/first section for
+/// backwards compatibility with older rows.
+model LectureSection {
+  lectureId String
+  sectionId String
+
+  lecture Lecture @relation(fields: [lectureId], references: [id], onDelete: Cascade)
+  section Section @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+
+  @@id([lectureId, sectionId])
+  @@index([sectionId])
+}
+
+/// Weekly timetable for a course per section. Day numbering follows the
+/// Iraqi academic week: 0 = Sunday ... 6 = Saturday.
+/// Times are stored as "HH:mm" 24h strings. This table never decides who may
+/// sit an exam; it only drives cross-section attendance:
+///   1) a student may scan into another section's session of the same course
+///      when his own (course, section) pair has a timetable entry, and
+///   2) at close, a student marked elsewhere this week is recorded as
+///      "حاضر عبر الشعبة X" instead of absent.
+model TimetableEntry {
+  id         String @id @default(uuid())
+  courseId   String
+  sectionId  String
+  dayOfWeek  Int
+  startTime  String
+  endTime    String
+  hall       String?
+  type       String?  @default("THEORETICAL")
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  course  Course  @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  section Section @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+
+  @@unique([courseId, sectionId, dayOfWeek, startTime])
+  @@index([sectionId, dayOfWeek])
+  @@index([courseId])
+}

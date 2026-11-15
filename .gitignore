@@ -1,16 +1,16 @@
-# Developer Tools
-Create_Update_Package.bat
+# Local PostgreSQL data (never uploaded; production uses the hosted database)
+postgresql/
 
 # Dependencies & Runtime
 node_modules/
 **/node_modules/
-bin/
 
 # Build Outputs
 dist/
 **/dist/
 .next/
 **/.next/
+.next-verify/
 *.tsbuildinfo
 
 # Database & Backups

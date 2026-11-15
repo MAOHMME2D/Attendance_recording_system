@@ -1,7 +1,13 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
-import { studentApi, sectionApi, SectionItem } from '../../lib/api';
+import {
+  ACADEMIC_STAGES,
+  STAGE_LABELS,
+  studentApi,
+  sectionApi,
+  SectionItem,
+} from '../../lib/api';
 
 interface ResetAbsencesModalProps {
   isOpen: boolean;
@@ -9,7 +15,12 @@ interface ResetAbsencesModalProps {
   onSuccess: (message: string) => void;
   currentStudyPeriod?: string;
   currentSection?: string;
+  currentSectionId?: string;
+  currentStage?: number;
 }
+
+type ResetScope = 'STAGE' | 'PERIOD' | 'SECTION';
+type StudyPeriod = 'MORNING' | 'EVENING';
 
 export default function ResetAbsencesModal({
   isOpen,
@@ -17,11 +28,19 @@ export default function ResetAbsencesModal({
   onSuccess,
   currentStudyPeriod,
   currentSection,
+  currentSectionId,
+  currentStage,
 }: ResetAbsencesModalProps) {
-  const [scope, setScope] = useState<'ALL' | 'PERIOD' | 'SECTION'>('PERIOD');
-  const [studyPeriod, setStudyPeriod] = useState<string>(currentStudyPeriod || 'MORNING');
-  const [section, setSection] = useState<string>(currentSection || '');
-  const [resetType, setResetType] = useState<'ABSENCES_ONLY' | 'ALL_ATTENDANCE'>('ABSENCES_ONLY');
+  // A stage is always required: the backend rejects an unscoped reset so a
+  // cleanup for one stage can never silently zero another stage.
+  const [scope, setScope] = useState<ResetScope>('PERIOD');
+  const [stage, setStage] = useState<number>(
+    currentStage && ACADEMIC_STAGES.includes(currentStage as any) ? currentStage : 2,
+  );
+  const [studyPeriod, setStudyPeriod] = useState<StudyPeriod>(
+    currentStudyPeriod === 'EVENING' ? 'EVENING' : 'MORNING',
+  );
+  const [sectionId, setSectionId] = useState<string>(currentSectionId || '');
   const [sections, setSections] = useState<SectionItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -29,10 +48,17 @@ export default function ResetAbsencesModal({
 
   useEffect(() => {
     if (isOpen) {
-      if (currentStudyPeriod) setStudyPeriod(currentStudyPeriod);
-      if (currentSection && currentSection !== 'ALL') {
+      if (currentStudyPeriod === 'EVENING' || currentStudyPeriod === 'MORNING') {
+        setStudyPeriod(currentStudyPeriod);
+      }
+      if (currentStage && ACADEMIC_STAGES.includes(currentStage as any)) {
+        setStage(currentStage);
+      }
+      if (currentSectionId) {
         setScope('SECTION');
-        setSection(currentSection);
+        setSectionId(currentSectionId);
+      } else {
+        setSectionId('');
       }
       setConfirmText('');
       setError(null);
@@ -43,17 +69,47 @@ export default function ResetAbsencesModal({
         .then((data) => setSections(data))
         .catch(() => {});
     }
-  }, [isOpen, currentStudyPeriod, currentSection]);
+  }, [isOpen, currentStudyPeriod, currentSection, currentSectionId, currentStage]);
 
   if (!isOpen) return null;
 
-  const filteredSections = sections.filter((s) => s.studyPeriod === studyPeriod);
+  const filteredSections = sections.filter(
+    (section) => section.stage === stage && section.studyPeriod === studyPeriod,
+  );
+
+  const selectedSection = sections.find((section) => section.id === sectionId) || null;
+  const legacySectionMatch =
+    !selectedSection && currentSection
+      ? sections.find(
+          (section) =>
+            section.stage === stage &&
+            section.studyPeriod === studyPeriod &&
+            section.name === currentSection,
+        ) || null
+      : null;
+  const effectiveSection = selectedSection || legacySectionMatch;
+
+  const scopeSummary =
+    scope === 'SECTION'
+      ? `${STAGE_LABELS[stage as keyof typeof STAGE_LABELS]} — ${
+          studyPeriod === 'EVENING' ? 'مسائي' : 'صباحي'
+        } — ${effectiveSection?.label || effectiveSection?.name || 'اختر شعبة'}`
+      : scope === 'PERIOD'
+        ? `${STAGE_LABELS[stage as keyof typeof STAGE_LABELS]} — ${
+            studyPeriod === 'EVENING' ? 'مسائي' : 'صباحي'
+          }`
+        : `${STAGE_LABELS[stage as keyof typeof STAGE_LABELS]} — كل الشعب`;
 
   const handleReset = async (e: React.FormEvent) => {
     e.preventDefault();
 
-    if (confirmText.trim() !== 'تأكيد') {
-      setError('يرجى كتابة كلمة "تأكيد" في الحقل لتأكيد العملية');
+    if (confirmText.trim() !== 'تاكيد') {
+      setError('يرجى كتابة كلمة "تاكيد" في الحقل');
+      return;
+    }
+
+    if (scope === 'SECTION' && !sectionId) {
+      setError('يرجى اختيار الشعبة أولاً');
       return;
     }
 
@@ -61,22 +117,30 @@ export default function ResetAbsencesModal({
     setError(null);
 
     try {
-      const payload: any = {
-        resetType,
+      const payload: {
+        stage: number;
+        studyPeriod?: StudyPeriod;
+        sectionId?: string;
+        resetType: 'ABSENCES_ONLY' | 'ALL_ATTENDANCE';
+      } = {
+        stage,
+        // A semester reset always starts attendance from zero: present,
+        // absent and the total lectures counter are all cleared together.
+        resetType: 'ALL_ATTENDANCE',
       };
 
-      if (scope === 'PERIOD') {
+      if (scope === 'PERIOD' || scope === 'SECTION') {
         payload.studyPeriod = studyPeriod;
-      } else if (scope === 'SECTION') {
-        payload.studyPeriod = studyPeriod;
-        payload.section = section;
+      }
+      if (scope === 'SECTION') {
+        payload.sectionId = sectionId;
       }
 
       const res = await studentApi.resetAbsences(payload);
-      onSuccess(res.message || 'تم تصفير الغيابات بنجاح');
+      onSuccess(res.message || 'تم تصفير السجلات بنجاح');
       onClose();
     } catch (err: any) {
-      setError(err.message || 'حدث خطأ أثناء تصفير الغيابات');
+      setError(err.message || 'حدث خطأ أثناء تصفير السجلات');
     } finally {
       setLoading(false);
     }
@@ -142,10 +206,10 @@ export default function ResetAbsencesModal({
             </div>
             <div>
               <h3 style={{ margin: 0, fontSize: '18px', fontWeight: 'bold', color: '#991B1B' }}>
-                تصفير الغيابات
+                تصفير سجلات الفصل الدراسي
               </h3>
               <p style={{ margin: 0, fontSize: '12px', color: '#6B7280' }}>
-                إعادة ضبط عداد وسجلات غيابات الطلاب
+                بداية فصل دراسي جديد: مسح الحضور والغياب والإجمالي والسجل للمرحلة المحددة
               </p>
             </div>
           </div>
@@ -191,6 +255,22 @@ export default function ResetAbsencesModal({
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '8px' }}>
               <button
                 type="button"
+                onClick={() => setScope('STAGE')}
+                style={{
+                  padding: '8px',
+                  borderRadius: '8px',
+                  border: scope === 'STAGE' ? '2px solid #DC2626' : '1px solid #D1D5DB',
+                  background: scope === 'STAGE' ? '#FEF2F2' : '#FFFFFF',
+                  color: scope === 'STAGE' ? '#991B1B' : '#4B5563',
+                  fontSize: '12px',
+                  fontWeight: '600',
+                  cursor: 'pointer',
+                }}
+              >
+                كل شعب المرحلة
+              </button>
+              <button
+                type="button"
                 onClick={() => setScope('PERIOD')}
                 style={{
                   padding: '8px',
@@ -221,27 +301,39 @@ export default function ResetAbsencesModal({
               >
                 شعبة محددة
               </button>
-              <button
-                type="button"
-                onClick={() => setScope('ALL')}
-                style={{
-                  padding: '8px',
-                  borderRadius: '8px',
-                  border: scope === 'ALL' ? '2px solid #DC2626' : '1px solid #D1D5DB',
-                  background: scope === 'ALL' ? '#FEF2F2' : '#FFFFFF',
-                  color: scope === 'ALL' ? '#991B1B' : '#4B5563',
-                  fontSize: '12px',
-                  fontWeight: '600',
-                  cursor: 'pointer',
-                }}
-              >
-                الكل (عام)
-              </button>
             </div>
           </div>
 
-          {/* Period Selection (if scope is not ALL) */}
-          {scope !== 'ALL' && (
+          {/* Stage Selection (always required) */}
+          <div style={{ marginBottom: '14px' }}>
+            <label style={{ display: 'block', fontSize: '13px', fontWeight: '500', color: '#4B5563', marginBottom: '6px' }}>
+              المرحلة:
+            </label>
+            <select
+              value={stage}
+              onChange={(e) => {
+                setStage(Number(e.target.value));
+                setSectionId('');
+              }}
+              style={{
+                width: '100%',
+                padding: '9px 12px',
+                borderRadius: '8px',
+                border: '1px solid #D1D5DB',
+                fontSize: '14px',
+                outline: 'none',
+              }}
+            >
+              {ACADEMIC_STAGES.map((value) => (
+                <option key={value} value={value}>
+                  {STAGE_LABELS[value]}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* Period Selection (stage scope covers every period in that stage) */}
+          {scope !== 'STAGE' && (
             <div style={{ marginBottom: '14px' }}>
               <label style={{ display: 'block', fontSize: '13px', fontWeight: '500', color: '#4B5563', marginBottom: '6px' }}>
                 الدراسة:
@@ -249,8 +341,8 @@ export default function ResetAbsencesModal({
               <select
                 value={studyPeriod}
                 onChange={(e) => {
-                  setStudyPeriod(e.target.value);
-                  setSection('');
+                  setStudyPeriod(e.target.value as StudyPeriod);
+                  setSectionId('');
                 }}
                 style={{
                   width: '100%',
@@ -274,8 +366,8 @@ export default function ResetAbsencesModal({
                 الشعبة:
               </label>
               <select
-                value={section}
-                onChange={(e) => setSection(e.target.value)}
+                value={sectionId}
+                onChange={(e) => setSectionId(e.target.value)}
                 required
                 style={{
                   width: '100%',
@@ -288,80 +380,32 @@ export default function ResetAbsencesModal({
               >
                 <option value="">-- اختر الشعبة --</option>
                 {filteredSections.map((s) => (
-                  <option key={s.id} value={s.name}>
+                  <option key={s.id} value={s.id}>
                     {s.label || `الشعبة ${s.name}`}
                   </option>
                 ))}
               </select>
+              {filteredSections.length === 0 && (
+                <p style={{ marginTop: '6px', fontSize: '12px', color: '#B45309' }}>
+                  لا توجد شعب مسجلة لهذه المرحلة والدراسة.
+                </p>
+              )}
             </div>
           )}
 
-          {/* Reset Type */}
-          <div style={{ marginBottom: '18px' }}>
-            <label style={{ display: 'block', fontSize: '13px', fontWeight: '600', color: '#374151', marginBottom: '8px' }}>
-              نوع التصفير:
-            </label>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-              <label
-                style={{
-                  display: 'flex',
-                  alignItems: 'flex-start',
-                  gap: '10px',
-                  padding: '10px 12px',
-                  borderRadius: '8px',
-                  border: resetType === 'ABSENCES_ONLY' ? '1px solid #DC2626' : '1px solid #E5E7EB',
-                  background: resetType === 'ABSENCES_ONLY' ? '#FEF2F2' : '#F9FAFB',
-                  cursor: 'pointer',
-                }}
-              >
-                <input
-                  type="radio"
-                  name="resetType"
-                  value="ABSENCES_ONLY"
-                  checked={resetType === 'ABSENCES_ONLY'}
-                  onChange={() => setResetType('ABSENCES_ONLY')}
-                  style={{ marginTop: '3px' }}
-                />
-                <div>
-                  <strong style={{ fontSize: '13px', color: '#111827', display: 'block' }}>
-                    تصفير الغيابات فقط (موصى به)
-                  </strong>
-                  <span style={{ fontSize: '12px', color: '#6B7280' }}>
-                    تصفير عداد الغياب وحذف سجلات الغياب السابقة مع الحفاظ على سجلات حضور الطلاب.
-                  </span>
-                </div>
-              </label>
-
-              <label
-                style={{
-                  display: 'flex',
-                  alignItems: 'flex-start',
-                  gap: '10px',
-                  padding: '10px 12px',
-                  borderRadius: '8px',
-                  border: resetType === 'ALL_ATTENDANCE' ? '1px solid #DC2626' : '1px solid #E5E7EB',
-                  background: resetType === 'ALL_ATTENDANCE' ? '#FEF2F2' : '#F9FAFB',
-                  cursor: 'pointer',
-                }}
-              >
-                <input
-                  type="radio"
-                  name="resetType"
-                  value="ALL_ATTENDANCE"
-                  checked={resetType === 'ALL_ATTENDANCE'}
-                  onChange={() => setResetType('ALL_ATTENDANCE')}
-                  style={{ marginTop: '3px' }}
-                />
-                <div>
-                  <strong style={{ fontSize: '13px', color: '#DC2626', display: 'block' }}>
-                    تصفير شامل (الحضور والغياب والبدء من الصفر)
-                  </strong>
-                  <span style={{ fontSize: '12px', color: '#6B7280' }}>
-                    مسح جميع سجلات الحضور والغياب للبدء بفصل دراسي جديد كلياً.
-                  </span>
-                </div>
-              </label>
-            </div>
+          {/* Scope summary */}
+          <div
+            style={{
+              padding: '10px 12px',
+              borderRadius: '8px',
+              background: '#F9FAFB',
+              border: '1px solid #E5E7EB',
+              marginBottom: '16px',
+              fontSize: '12.5px',
+              color: '#374151',
+            }}
+          >
+            <strong>سيتم التصفير ضمن:</strong> {scopeSummary}
           </div>
 
           {/* Warning Banner */}
@@ -377,25 +421,28 @@ export default function ResetAbsencesModal({
               lineHeight: '1.6',
             }}
           >
-            ⚠️ <strong>تنبيه مهم:</strong> عملية التصفير نهائية ولا يمكن التراجع عنها. سيتم تحديث إحصائيات الطلاب
-            المحددين فوراً في قاعدة البيانات.
+            ⚠️ <strong>تنبيه مهم:</strong> عملية التصفير نهائية ولا يمكن التراجع عنها. تُحذف
+            سجلات الحضور والغياب وإجمالي المحاضرات وسجل الطالب ضمن النطاق المحدد فقط،
+            وتُحذف كذلك المحاضرات المنتهية (المغلقة والمؤرشفة) داخل النطاق،
+            وتُحدَّث إحصائيات الطلاب فوراً، ليبدأ الفصل الدراسي الجديد من الصفر.
+            المحاضرات المفتوحة حالياً تبقى ولا تُمسّ سجلاتها.
           </div>
 
           {/* Confirmation Input */}
           <div style={{ marginBottom: '16px' }}>
             <label style={{ display: 'block', fontSize: '13px', fontWeight: '600', color: '#374151', marginBottom: '6px' }}>
-              للتأكيد، اكتب كلمة <span style={{ color: '#DC2626', fontWeight: 'bold' }}>"تأكيد"</span> أدناه:
+              للتأكيد، اكتب كلمة <span style={{ color: '#DC2626', fontWeight: 'bold' }}>"تاكيد"</span> أدناه:
             </label>
             <input
               type="text"
-              placeholder='اكتب: تأكيد'
+              placeholder='اكتب: تاكيد'
               value={confirmText}
               onChange={(e) => setConfirmText(e.target.value)}
               style={{
                 width: '100%',
                 padding: '10px 14px',
                 borderRadius: '8px',
-                border: confirmText.trim() === 'تأكيد' ? '2px solid #059669' : '1px solid #D1D5DB',
+                border: confirmText.trim() === 'تاكيد' ? '2px solid #059669' : '1px solid #D1D5DB',
                 fontSize: '14px',
                 outline: 'none',
               }}
@@ -423,22 +470,22 @@ export default function ResetAbsencesModal({
             </button>
             <button
               type="submit"
-              disabled={loading || confirmText.trim() !== 'تأكيد'}
+              disabled={loading || confirmText.trim() !== 'تاكيد'}
               style={{
                 padding: '9px 20px',
                 borderRadius: '8px',
                 border: 'none',
-                backgroundColor: confirmText.trim() === 'تأكيد' ? '#DC2626' : '#9CA3AF',
+                backgroundColor: confirmText.trim() === 'تاكيد' ? '#DC2626' : '#9CA3AF',
                 color: '#FFFFFF',
                 fontSize: '13px',
                 fontWeight: '600',
-                cursor: confirmText.trim() === 'تأكيد' && !loading ? 'pointer' : 'not-allowed',
+                cursor: confirmText.trim() === 'تاكيد' && !loading ? 'pointer' : 'not-allowed',
                 display: 'flex',
                 alignItems: 'center',
                 gap: '6px',
               }}
             >
-              {loading ? 'جاري التصفير...' : 'تأكيد تصفير الغيابات'}
+              {loading ? 'جاري التصفير...' : 'تأكيد تصفير السجلات'}
             </button>
           </div>
         </form>
@@ -446,4 +493,3 @@ export default function ResetAbsencesModal({
     </div>
   );
 }
-
