@@ -75,7 +75,6 @@ export function CameraScanner({
   // Status banner text (small bottom indicator, does not block camera)
   const [lastScanInfo, setLastScanInfo] = useState<{
     name: string;
-    code: string;
     status: 'success' | 'duplicate' | 'error';
     message: string;
   } | null>(null);
@@ -155,7 +154,6 @@ export function CameraScanner({
         triggerBorderFlash('duplicate');
         setLastScanInfo({
           name: result.studentName,
-          code: trimmed,
           status: 'duplicate',
           message: 'تم تسجيل الحضور مسبقاً لهذه المحاضرة',
         });
@@ -164,7 +162,6 @@ export function CameraScanner({
         triggerBorderFlash('success');
         setLastScanInfo({
           name: result.studentName,
-          code: trimmed,
           status: 'success',
           message: result.switchedFromAbsent ? 'تم تعديل الحالة من غائب إلى حاضر' : 'تم تسجيل الحضور بنجاح',
         });
@@ -182,7 +179,6 @@ export function CameraScanner({
       triggerBorderFlash('error');
       setLastScanInfo({
         name: 'غير مسجل',
-        code: trimmed,
         status: 'error',
         message: err?.message || 'رمز الباركود غير مسجل في النظام',
       });
@@ -846,8 +842,22 @@ export function CameraScanner({
                 </div>
               </div>
 
-              <div style={{ fontFamily: 'monospace', fontSize: '12px', fontWeight: '700', background: 'rgba(0,0,0,0.25)', padding: '3px 8px', borderRadius: '6px' }}>
-                {lastScanInfo.code}
+              <div
+                style={{
+                  fontSize: '12px',
+                  fontWeight: '800',
+                  background: 'rgba(255,255,255,0.18)',
+                  border: '1px solid rgba(255,255,255,0.35)',
+                  padding: '4px 10px',
+                  borderRadius: '999px',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {lastScanInfo.status === 'success'
+                  ? 'حاضر'
+                  : lastScanInfo.status === 'duplicate'
+                    ? 'مسجل مسبقاً'
+                    : 'غير مسجل'}
               </div>
             </div>
           </div>

@@ -19,6 +19,10 @@ export default function FollowupStudentPage() {
   const [courseId, setCourseId] = useState('');
   const [sectionId, setSectionId] = useState('');
   const [stage, setStage] = useState('');
+  // The scope lives in the query string, so the first render cannot know it.
+  // Waiting for it avoids a doomed request (and an error flash) without a
+  // courseId, which the API rejects for staff assigned to several courses.
+  const [paramsReady, setParamsReady] = useState(false);
   const [detail, setDetail] = useState<FollowupStudentDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -32,10 +36,11 @@ export default function FollowupStudentPage() {
     setCourseId(params.get('courseId') || '');
     setSectionId(params.get('sectionId') || '');
     setStage(params.get('stage') || '');
+    setParamsReady(true);
   }, []);
 
   useEffect(() => {
-    if (!studentId) return;
+    if (!studentId || !paramsReady) return;
     let cancelled = false;
     setLoading(true);
     setError(null);
@@ -59,7 +64,7 @@ export default function FollowupStudentPage() {
     return () => {
       cancelled = true;
     };
-  }, [studentId, courseId, sectionId, stage]);
+  }, [studentId, courseId, sectionId, stage, paramsReady]);
 
   return (
     <div style={{ minHeight: '100vh' }}>

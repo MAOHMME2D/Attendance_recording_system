@@ -35,7 +35,9 @@ export class AttendanceService {
    * Rejects students who may not attend this lecture.
    *
    * Policy:
-   *   1. Stage and study period must match the lecture's course — always.
+   *   1. The student's stage must match the lecture's course (unless he is an
+   *      enrolled carry-over student). The study period may differ: such a
+   *      student is admitted and marked with his own period.
    *   2. The student's section must be one of the lecture's sections — OR the
    *      course is timetabled for the student's own section, in which case
    *      the student may attend a parallel session of the same course
@@ -43,8 +45,12 @@ export class AttendanceService {
    *      lecturer sees the student came from another section.
    *
    * Returns 'OWN' when the student belongs to the lecture's sections (the
-   * normal case), 'CROSS' when they are covered by the timetable rule, or
-   * 'CARRY_OVER' when a student is attending an enrolled cross-stage course.
+   * normal case), 'CROSS' when they are covered by the timetable rule,
+   * 'CARRY_OVER' when a student is attending an enrolled cross-stage course,
+   * 'NO_SECTION' when the student has no section at all (not bound to any
+   * section, so any session of the course in their stage/period is open), or
+   * 'OTHER_PERIOD' when he belongs to the other study period (a morning
+   * student attending an evening sitting, or the reverse).
    */
   private async assertStudentBelongsToLecture(
     lecture: {
@@ -70,7 +76,7 @@ export class AttendanceService {
       stage: number;
       deletedAt?: Date | null;
     },
-  ): Promise<'OWN' | 'CROSS' | 'CARRY_OVER'> {
+  ): Promise<'OWN' | 'CROSS' | 'CARRY_OVER' | 'NO_SECTION' | 'OTHER_PERIOD'> {
     if (student.deletedAt) {
       throw new BadRequestException(
         `الطالب (${student.name}) محذوف من النظام، ولا يمكن تسجيل حضوره.`,
@@ -127,17 +133,17 @@ export class AttendanceService {
       if (v === 'EVENING' || v.includes('مسائ')) return 'EVENING';
       return v;
     };
-    const periodLabel = (value: string) =>
-      value === 'MORNING' ? 'الصباحية' : value === 'EVENING' ? 'المسائية' : value;
 
     const lecturePeriod = normalizePeriod(lecture.studyPeriod);
     const studentPeriod = normalizePeriod(student.studyPeriod);
 
-    if (lecturePeriod && studentPeriod && lecturePeriod !== studentPeriod) {
-      throw new BadRequestException(
-        `الطالب (${student.name}) من الدراسة ${periodLabel(studentPeriod)}، بينما هذه المحاضرة ${periodLabel(lecturePeriod)}. لا يمكن تسجيل حضوره.`,
-      );
-    }
+    // A student from the other study period may still attend: the record is
+    // marked with his own period so the lecturer sees he came from the morning
+    // (or evening) shift. This must be decided before the section checks,
+    // because both shifts can use the same section numbers (e.g. "1").
+    const isCrossPeriod = Boolean(
+      lecturePeriod && studentPeriod && lecturePeriod !== studentPeriod,
+    );
 
     // Build the lecture's section set from the linked LectureSection rows
     // (multi-section lectures), falling back to the legacy single FK / text.
@@ -173,8 +179,21 @@ export class AttendanceService {
        (lecture.course?.stage && student.stage !== lecture.course.stage)),
     );
 
+    if (isCrossPeriod) {
+      return 'OTHER_PERIOD';
+    }
+
     if (studentInLectureSection) {
       return isCarryOverCrossStage ? 'CARRY_OVER' : 'OWN';
+    }
+
+    // A student with no section at all is not bound to any section: he may
+    // attend any session of the course in his stage/study period. The row is
+    // marked with a note so the lecturer can see he has no section. This also
+    // covers a student whose section is missing in the data (imported without
+    // a section) and who would otherwise be blocked from every scoped lecture.
+    if (!student.sectionId && !studentSection) {
+      return isCarryOverCrossStage ? 'CARRY_OVER' : 'NO_SECTION';
     }
 
     // Timetabled parallel session: the course runs for the student's own
@@ -201,6 +220,37 @@ export class AttendanceService {
     throw new BadRequestException(
       `الطالب (${student.name}) من الشعبة (${studentSectionDisplay})، بينما هذه المحاضرة مخصصة للشعبة (${lectureSectionDisplay}). لا يمكن تسجيل حضوره.`,
     );
+  }
+
+  /**
+   * Note stored on an attendance row when the student is not part of the
+   * lecture's own section(s). OWN rows keep any existing note untouched.
+   */
+  private scopeNote(
+    scope: 'OWN' | 'CROSS' | 'CARRY_OVER' | 'NO_SECTION' | 'OTHER_PERIOD',
+    student: {
+      section: string | null;
+      sectionRef?: { name: string } | null;
+      stage: number;
+      studyPeriod?: string | null;
+    },
+  ): string | undefined {
+    if (scope === 'CROSS') {
+      return `طالب من الشعبة ${student.sectionRef?.name ?? student.section ?? 'غير محددة'}`;
+    }
+    if (scope === 'CARRY_OVER') {
+      return `طالب عبور (المرحلة ${student.stage})`;
+    }
+    if (scope === 'NO_SECTION') {
+      return 'طالب بدون شعبة';
+    }
+    if (scope === 'OTHER_PERIOD') {
+      const period = String(student.studyPeriod || '').trim().toUpperCase();
+      return period === 'EVENING' || period.includes('مسائ')
+        ? 'طالب مسائي'
+        : 'طالب صباحي';
+    }
+    return undefined;
   }
 
   /**
@@ -400,12 +450,7 @@ export class AttendanceService {
             studentName: student.name,
             status,
             registeredAt: new Date(),
-            note:
-              scope === 'CROSS'
-                ? `طالب من الشعبة ${student.sectionRef?.name ?? student.section ?? 'غير محددة'}`
-                : scope === 'CARRY_OVER'
-                  ? `طالب عبور (المرحلة ${student.stage})`
-                  : undefined,
+            note: this.scopeNote(scope, student),
           },
         });
       } catch (error) {
@@ -570,12 +615,7 @@ export class AttendanceService {
                 studentId: student.id,
                 studentCode: student.studentCode,
                 registeredAt: new Date(),
-                note:
-                  scope === 'CROSS'
-                    ? `طالب من الشعبة ${student.sectionRef?.name ?? student.section ?? 'غير محددة'}`
-                    : scope === 'CARRY_OVER'
-                      ? `طالب عبور (المرحلة ${student.stage})`
-                      : existing.note,
+                note: this.scopeNote(scope, student) ?? existing.note,
               },
             });
             return { kind: 'SWITCHED', record: updated };
@@ -591,12 +631,7 @@ export class AttendanceService {
             studentName: student.name,
             status: 'PRESENT',
             registeredAt: new Date(),
-            note:
-              scope === 'CROSS'
-                ? `طالب من الشعبة ${student.sectionRef?.name ?? student.section ?? 'غير محددة'}`
-                : scope === 'CARRY_OVER'
-                  ? `طالب عبور (المرحلة ${student.stage})`
-                  : undefined,
+            note: this.scopeNote(scope, student),
           },
         });
         return { kind: 'CREATED', record };
